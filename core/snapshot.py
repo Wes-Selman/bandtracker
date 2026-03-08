@@ -1,7 +1,7 @@
 """
 core/snapshot.py
 
-Snapshot writer for BandTracker — Increment 2.
+Snapshot writer for BandTracker — Increment 2, updated in Increment 3.
 
 Takes a named snapshot of the live project:
   - Deduplicates media into media/
@@ -9,6 +9,12 @@ Takes a named snapshot of the live project:
   - Updates project.json (latest_snapshot, next_snapshot_index)
   - Supports optional milestone tags
   - Cleans up the snapshot folder on any failure
+
+Increment 3 addition:
+  - Calls the diff engine against the previous snapshot's ProjectData
+  - Populates diff_summary with human-readable change descriptions
+  - Falls back to diff_summary=[] if no previous snapshot exists or
+    if the diff fails for any reason (missing mask, I/O error, etc.)
 
 Nothing in here touches the CLI. Nothing constructs paths ad-hoc.
 All path logic lives in ProjectPaths.
@@ -18,7 +24,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +38,9 @@ from core.models import (
     StorageProvider,
 )
 from core.init import copy_media_to_store, hash_file
+from core.diff.engine import byte_diff, build_description
+from core.diff.noise import load_noise_mask
+from core.diff.interpreter import interpret_changes
 
 
 # ─────────────────────────────────────────────────────────────
@@ -120,8 +128,6 @@ def _ensure_media_in_store(
                 size_bytes=size_bytes,
             ))
         except Exception as e:
-            # Record the error in the entry rather than aborting — matches
-            # the pattern established in copy_media_to_store in init.py.
             entries.append(ManifestEntry(
                 original_name=f.name,
                 content_hash=f"ERROR: {e}",
@@ -129,6 +135,105 @@ def _ensure_media_in_store(
             ))
 
     return entries, copied_count, deduped_count
+
+
+def _compute_diff_summary(
+    paths: ProjectPaths,
+    project: Project,
+    project_name: str,
+) -> list[str]:
+    """
+    Compare the current live ProjectData against the previous snapshot's
+    ProjectData and return a list of human-readable change descriptions.
+
+    Returns [] (silently) in any of these cases:
+      - This is the first snapshot (no previous snapshot to compare)
+      - The previous snapshot's ProjectData file is missing
+      - The diff engine raises an unexpected error
+
+    The noise mask is loaded from noise_mask.json if present; if not,
+    the diff still runs but may include spurious changes.
+    """
+    previous_index = project.latest_snapshot
+    if previous_index is None:
+        return []  # first snapshot — no diff to run
+
+    prev_pd_path = paths.snapshot_project_data(previous_index)
+    curr_pd_path = paths.live_project_data(project_name)
+
+    if not prev_pd_path.exists():
+        return []
+    if not curr_pd_path.exists():
+        return []
+
+    try:
+        baseline_bytes = prev_pd_path.read_bytes()
+        changed_bytes = curr_pd_path.read_bytes()
+
+        noise_mask = load_noise_mask(paths.noise_mask_json)
+
+        diff_result = byte_diff(
+            baseline_bytes,
+            changed_bytes,
+            noise_mask=noise_mask if noise_mask else None,
+        )
+
+        if not diff_result.ok:
+            return []
+
+        interpreted = interpret_changes(diff_result, full_changed_bytes=changed_bytes)
+
+        return interpreted if interpreted else []
+
+    except Exception:
+        return []
+
+
+def _compute_auto_description(
+    paths: ProjectPaths,
+    project: Project,
+    project_name: str,
+) -> Optional[str]:
+    """
+    Run the diff engine and return a single auto-generated description
+    string, or None if the diff produced nothing useful.
+
+    Separate from _compute_diff_summary so snapshot.py can use the
+    description for the snapshot message when no --message was passed.
+    """
+    previous_index = project.latest_snapshot
+    if previous_index is None:
+        return None
+
+    prev_pd_path = paths.snapshot_project_data(previous_index)
+    curr_pd_path = paths.live_project_data(project_name)
+
+    if not prev_pd_path.exists() or not curr_pd_path.exists():
+        return None
+
+    try:
+        baseline_bytes = prev_pd_path.read_bytes()
+        changed_bytes = curr_pd_path.read_bytes()
+        noise_mask = load_noise_mask(paths.noise_mask_json)
+
+        diff_result = byte_diff(
+            baseline_bytes,
+            changed_bytes,
+            noise_mask=noise_mask if noise_mask else None,
+        )
+
+        if not diff_result.ok:
+            return None
+
+        interpreted = interpret_changes(diff_result, full_changed_bytes=changed_bytes)
+        desc = build_description(diff_result, interpreted)
+
+        if desc and desc != "no changes detected":
+            return desc
+        return None
+
+    except Exception:
+        return None
 
 
 def _write_snapshot_atomically(
@@ -139,6 +244,7 @@ def _write_snapshot_atomically(
     author: str,
     media_entries: list[ManifestEntry],
     milestone: Optional[MilestoneTag],
+    diff_summary: Optional[list[str]] = None,
 ) -> Snapshot:
     """
     Write ProjectData, manifest.json, and meta.json into the snapshot
@@ -146,6 +252,7 @@ def _write_snapshot_atomically(
 
     Raises on any I/O failure — caller is responsible for cleanup.
     """
+    resolved_diff_summary = diff_summary if diff_summary is not None else []
     snap_dir = paths.snapshot(index)
     snap_dir.mkdir(parents=True, exist_ok=True)
     paths.snapshot_sidecar(index).mkdir(parents=True, exist_ok=True)
@@ -161,7 +268,7 @@ def _write_snapshot_atomically(
         description=description,
         timestamp=datetime.now(timezone.utc),
         author=author,
-        diff_summary=[],
+        diff_summary=resolved_diff_summary,
         milestone=milestone,
         media=media_entries,
         sidecar_files=[],
@@ -211,7 +318,8 @@ def take_snapshot(
         provider        storage provider (knows where projects live)
         project_name    name of the project folder (sanitized)
         author          identifier of whoever is running this command
-        message         optional description; placeholder used if None
+        message         optional description; auto-generated from diff
+                        if None, falls back to PLACEHOLDER_DESCRIPTION
         milestone       optional MilestoneTag to attach
 
     Returns:
@@ -240,8 +348,17 @@ def take_snapshot(
         )
 
     index = project.next_snapshot_index
-    description = message if message else PLACEHOLDER_DESCRIPTION
     snap_dir = paths.snapshot(index)
+
+    # ── Diff (before media dedup — reads live ProjectData, no side effects) ──
+    diff_summary = _compute_diff_summary(paths, project, project_name)
+
+    # Auto-generate description if no message provided
+    if message:
+        description = message
+    else:
+        auto_desc = _compute_auto_description(paths, project, project_name)
+        description = auto_desc if auto_desc else PLACEHOLDER_DESCRIPTION
 
     # ── Media deduplication ────────────────────────────────────
     live_media = _collect_live_media(paths, project_name)
@@ -265,9 +382,9 @@ def take_snapshot(
             author=author,
             media_entries=media_entries,
             milestone=milestone,
+            diff_summary=diff_summary,
         )
     except Exception as e:
-        # Clean up the partial snapshot folder
         if snap_dir.exists():
             shutil.rmtree(snap_dir, ignore_errors=True)
         return SnapshotResult(
@@ -279,7 +396,6 @@ def take_snapshot(
     try:
         _update_project_json(paths, index)
     except Exception as e:
-        # Roll back the snapshot folder — project.json is the source of truth
         if snap_dir.exists():
             shutil.rmtree(snap_dir, ignore_errors=True)
         return SnapshotResult(
