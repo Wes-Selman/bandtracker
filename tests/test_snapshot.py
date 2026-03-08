@@ -21,7 +21,7 @@ from datetime import timezone
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.init import PROJECTDATA_MAGIC, initialize
+from core.init import PROJECTDATA_MAGIC, PROJECTDATA_MAGIC_OFFSET, initialize
 from core.models import (
     ManifestEntry,
     MilestoneTag,
@@ -50,13 +50,13 @@ def make_band(tmp: Path, name: str = "TestProject",
               bad_magic: bool = False) -> Path:
     """Minimal valid .band bundle — mirrors the helper in test_init.py."""
     band = tmp / f"{name}.band"
-    (band / "Output").mkdir(parents=True)
+    (band / "Alternatives" / "000").mkdir(parents=True)
     (band / "Media" / "Audio Files").mkdir(parents=True)
 
     data = bytearray(512)
-    data[0:4] = b"XXXX" if bad_magic else PROJECTDATA_MAGIC
+    data[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4] = b"XXXX" if bad_magic else PROJECTDATA_MAGIC
     struct.pack_into("<I", data, 0x40, 1_210_000)
-    (band / "Output" / "ProjectData").write_bytes(data)
+    (band / "Alternatives" / "000" / "ProjectData").write_bytes(data)
 
     if with_media:
         (band / "Media" / "Audio Files" / "Guitar Take 1.aif").write_bytes(
@@ -562,7 +562,8 @@ class TestTakeSnapshot:
                 project = Project.from_json(paths.project_json.read_text())
                 assert project.next_snapshot_index == 2
         finally:
-            snap_dir.chmod(0o755)
+            if snap_dir.exists():
+                snap_dir.chmod(0o755)
 
     # ── Result fields ─────────────────────────────────────────
 
