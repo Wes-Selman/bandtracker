@@ -1,0 +1,2 @@
+[console_scripts]
+bandtracker = cli.main:main

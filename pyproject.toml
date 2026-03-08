@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bandtracker"
+version = "0.1.0"
+description = "Version control for GarageBand"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+bandtracker = "cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli*", "core*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

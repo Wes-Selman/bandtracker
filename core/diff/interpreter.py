@@ -34,9 +34,6 @@ from core.diff.engine import ChangedRange, DiffResult
 # whichever one we find first.
 _TEMPO_OFFSETS = frozenset({0xaa, 0x102, 0x3be, 0x12cc})
 
-# µs/beat → BPM conversion: BPM = 60_000_000 / µs_per_beat
-_MICROSECONDS_PER_MINUTE = 60_000_000
-
 # Pan is stored as a uint32 at this offset (range interpretation TBD
 # from research — stored for future use).
 _PAN_OFFSET = 0xc5
@@ -71,10 +68,10 @@ def _decode_tempo(full_changed: bytes, offset: int) -> Optional[str]:
     if offset + 4 > len(full_changed):
         return None
     try:
-        us_per_beat = struct.unpack_from("<I", full_changed, offset)[0]
-        if us_per_beat == 0:
+        raw = struct.unpack_from("<I", full_changed, offset)[0]
+        if raw == 0:
             return None
-        bpm = round(_MICROSECONDS_PER_MINUTE / us_per_beat, 1)
+        bpm = round(raw / 10000.0, 1)
         # Sanity check — GarageBand supports 5–990 BPM
         if not (5 <= bpm <= 990):
             return None

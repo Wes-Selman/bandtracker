@@ -45,6 +45,9 @@ def _parse_milestone(value: str) -> MilestoneTag:
 # ARGUMENT PARSER
 # ─────────────────────────────────────────────────────────────
 
+def add_subparser(subparsers) -> None:
+    build_parser(subparsers).set_defaults(func=run)
+
 def build_parser(subparsers=None) -> argparse.ArgumentParser:
     """
     Build the argument parser for `bandtracker snapshot`.
@@ -53,6 +56,7 @@ def build_parser(subparsers=None) -> argparse.ArgumentParser:
     registered into an existing subparsers group.
     """
     kwargs = dict(
+        help="Save a named snapshot of the current project state",
         description="Take a snapshot of the current project state.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
