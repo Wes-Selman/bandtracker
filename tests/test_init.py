@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.init import (
     PROJECTDATA_MAGIC,
+    PROJECTDATA_MAGIC_OFFSET,
     copy_band_bundle,
     copy_media_to_store,
     hash_file,
@@ -51,13 +52,17 @@ def make_band(tmp: Path, name: str = "TestProject",
               bad_magic: bool = False) -> Path:
     """Create a minimal valid .band bundle for testing."""
     band = tmp / f"{name}.band"
-    (band / "Output").mkdir(parents=True)
+    (band / "Alternatives" / "000").mkdir(parents=True)
     (band / "Media" / "Audio Files").mkdir(parents=True)
 
     data = bytearray(512)
-    data[0:4] = b"XXXX" if bad_magic else PROJECTDATA_MAGIC
+    # gnoS lives at offset 24, not 0
+    if bad_magic:
+        data[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4] = b"XXXX"
+    else:
+        data[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4] = PROJECTDATA_MAGIC
     struct.pack_into("<I", data, 0x40, 1_210_000)
-    (band / "Output" / "ProjectData").write_bytes(data)
+    (band / "Alternatives" / "000" / "ProjectData").write_bytes(data)
 
     if with_media:
         (band / "Media" / "Audio Files" / "Guitar Take 1.aif").write_bytes(b"AIFF" + b"\x00" * 64)
@@ -80,7 +85,7 @@ class TestValidateBand:
         r = validate_band(band)
         assert r.ok
         assert r.errors == []
-        assert r.project_data_path == band / "Output" / "ProjectData"
+        assert r.project_data_path == band / "Alternatives" / "000" / "ProjectData"
 
     def test_missing_path(self, tmp_path):
         r = validate_band(tmp_path / "DoesNotExist.band")
@@ -288,8 +293,8 @@ class TestCopyBandBundle:
         result = copy_band_bundle(band, dest_dir)
 
         assert result == dest_dir / band.name
-        assert (result / "Output" / "ProjectData").exists()
-        magic = (result / "Output" / "ProjectData").read_bytes()[:4]
+        assert (result / "Alternatives" / "000" / "ProjectData").exists()
+        magic = (result / "Alternatives" / "000" / "ProjectData").read_bytes()[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4]
         assert magic == PROJECTDATA_MAGIC
 
     def test_overwrites_existing_dest(self, tmp_path):
@@ -320,7 +325,6 @@ class TestWriteInitialSnapshot:
         paths.snapshots.mkdir(parents=True)
         paths.snapshot_sidecar(1).mkdir(parents=True)
 
-        # Simulate live/ having the band bundle
         import shutil
         shutil.copytree(band, paths.live_band(project_name))
 
@@ -455,7 +459,7 @@ class TestInitialize:
         paths = ProjectPaths(result.project_root)
         live_band = paths.live_band("TestProject")
         assert live_band.exists()
-        assert (live_band / "Output" / "ProjectData").exists()
+        assert (live_band / "Alternatives" / "000" / "ProjectData").exists()
 
     def test_media_deduplicated(self, tmp_path):
         band = make_band(tmp_path / "gb", with_media=True)
@@ -495,7 +499,7 @@ class TestInitialize:
         provider = make_provider(tmp_path)
 
         # Corrupt ProjectData so copy verification fails
-        pd = band / "Output" / "ProjectData"
+        pd = band / "Alternatives" / "000" / "ProjectData"
         pd.write_bytes(b"XXXX" + b"\x00" * 508)
 
         result = initialize(band, provider, "j@e.com", "Jordan")
@@ -526,4 +530,3 @@ class TestInitialize:
         result = initialize(band, provider, "j@e.com", "Jordan")
         assert result.ok
         assert result.media_files_copied == 0
-

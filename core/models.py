@@ -455,7 +455,7 @@ class ProjectPaths:
         return self.live / f"{project_name}.band"
 
     def live_project_data(self, project_name: str) -> Path:
-        return self.live_band(project_name) / "Output" / "ProjectData"
+        return self.live_band(project_name) / "Alternatives" / "000" / "ProjectData"
 
     def live_media_dir(self, project_name: str) -> Path:
         return self.live_band(project_name) / "Media" / "Audio Files"

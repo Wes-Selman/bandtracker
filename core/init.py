@@ -38,6 +38,7 @@ from core.models import (
 # ─────────────────────────────────────────────────────────────
 
 PROJECTDATA_MAGIC = b"gnoS"
+PROJECTDATA_MAGIC_OFFSET = 24  # gnoS appears at offset 24, not 0
 
 # Audio file extensions GarageBand produces
 AUDIO_EXTENSIONS = {".aif", ".aiff", ".caf", ".wav", ".m4a", ".mp3"}
@@ -109,8 +110,8 @@ def validate_band(band_path: Path) -> ValidationResult:
     Checks:
       - path exists and is a directory
       - has .band extension
-      - contains Output/ProjectData
-      - ProjectData starts with gnoS magic bytes
+      - contains Alternatives/000/ProjectData
+      - ProjectData contains gnoS magic bytes at offset 24
       - GarageBand does not currently have it open
       - sufficient free disk space for copying
     """
@@ -132,22 +133,23 @@ def validate_band(band_path: Path) -> ValidationResult:
         )
 
     # ── ProjectData
-    pd_path = band_path / "Output" / "ProjectData"
+    pd_path = band_path / "Alternatives" / "000" / "ProjectData"
     if not pd_path.exists():
         result.add_error(
-            f"No Output/ProjectData found in {band_path.name}. "
+            f"No Alternatives/000/ProjectData found in {band_path.name}. "
             "Is this a valid GarageBand project?"
         )
         return result
 
     result.project_data_path = pd_path
 
-    # ── Magic bytes
+    # ── Magic bytes (gnoS at offset 24)
     try:
-        magic = pd_path.read_bytes()[:4]
+        magic = pd_path.read_bytes()[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4]
         if magic != PROJECTDATA_MAGIC:
             result.add_error(
-                f"ProjectData does not start with expected magic bytes "
+                f"ProjectData does not contain expected magic bytes at offset "
+                f"{PROJECTDATA_MAGIC_OFFSET} "
                 f"(got {magic.hex()!r}, expected {PROJECTDATA_MAGIC.hex()!r}). "
                 "This may not be a GarageBand 10.4+ project."
             )
@@ -318,14 +320,14 @@ def copy_band_bundle(src: Path, dest_dir: Path, dest_name: str = "") -> Path:
     shutil.copytree(src, dest)
 
     # Verify ProjectData survived the copy
-    pd = dest / "Output" / "ProjectData"
+    pd = dest / "Alternatives" / "000" / "ProjectData"
     if not pd.exists():
         shutil.rmtree(dest)
         raise OSError(
             f"Copy verification failed: ProjectData missing in {dest}"
         )
 
-    magic = pd.read_bytes()[:4]
+    magic = pd.read_bytes()[PROJECTDATA_MAGIC_OFFSET:PROJECTDATA_MAGIC_OFFSET + 4]
     if magic != PROJECTDATA_MAGIC:
         shutil.rmtree(dest)
         raise OSError(
