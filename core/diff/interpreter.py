@@ -28,7 +28,7 @@ from core.diff.engine import ChangedRange, DiffResult
 # (offsets from band-cartographer research/10.4.8_arm64)
 # ─────────────────────────────────────────────────────────────
 
-# Tempo is stored as microseconds-per-beat (µs/beat) as a uint32 LE.
+# Tempo is bpm * 10_000.
 # All four confirmed tempo offsets from the change-tempo-1bpm experiment.
 # Any one of them changing is enough to report a tempo change — we decode
 # whichever one we find first.

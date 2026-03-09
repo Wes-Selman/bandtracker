@@ -51,8 +51,8 @@ def pack_uint32_le(value: int) -> bytes:
 
 
 def bpm_to_us(bpm: float) -> int:
-    """Convert BPM to µs/beat (the encoding GarageBand uses for tempo)."""
-    return round(60_000_000 / bpm)
+    """Convert BPM to GarageBand's raw tempo encoding (bpm * 10_000)."""
+    return round(bpm * 10_000)
 
 
 def make_projectdata_with_tempo(bpm: float, size: int = 512) -> bytes:
