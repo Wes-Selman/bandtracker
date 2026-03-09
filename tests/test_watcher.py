@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
+from core.snapshot import take_snapshot, SnapshotResult
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -544,21 +545,18 @@ class TestProjectWatcherOnSave:
         watcher, printed, provider, project_name, gb_pd = self._setup(
             tmp_path, prompts=["y", ""]
         )
-        # Remove live ProjectData so take_snapshot() will fail
-        watcher._live_pd.unlink()
 
-        # Should not raise — error should surface as printed output
-        try:
-            watcher._on_save(gb_pd)
-        except Exception as exc:
-            raise AssertionError(f"_on_save raised unexpectedly: {exc}")
+        with patch("core.watcher.take_snapshot") as mock_snap:
+            mock_snap.return_value = SnapshotResult(ok=False, errors=["simulated failure"])
+            try:
+                watcher._on_save(gb_pd)
+            except Exception as exc:
+                raise AssertionError(f"_on_save raised unexpectedly: {exc}")
 
-        # Either the error is in the event or something was printed
         last_event = watcher.events[-1]
         error_communicated = (
-            last_event.error is not None
-            or (last_event.snapshot_result is not None and not last_event.snapshot_result.ok)
-            or any("✗" in line or "failed" in line.lower() or "error" in line.lower() for line in printed)
+            last_event.snapshot_result is not None and not last_event.snapshot_result.ok
+            or any("✗" in line or "failed" in line.lower() for line in printed)
         )
         assert error_communicated
 

@@ -31,6 +31,7 @@ from core.models import (
     Snapshot,
     StorageProvider,
 )
+from core.bundle_ref import store_bundle_ref
 
 
 # ─────────────────────────────────────────────────────────────
@@ -462,10 +463,15 @@ def initialize(
     good_media = [e for e in media_entries if not e.content_hash.startswith("ERROR:")]
 
     # ── 7. project.json and handoff.json
+    # Store the GB bundle path and alias so future commands don't need --gb
+    gb_path_str, gb_alias = store_bundle_ref(band_path)
+
     project = Project.create(
         name=project_name,
         owner_identifier=owner_identifier,
         owner_display_name=owner_display_name,
+        gb_bundle_path=gb_path_str,
+        gb_bundle_alias=gb_alias,
     )
     project.latest_snapshot = 1
     project.next_snapshot_index = 2

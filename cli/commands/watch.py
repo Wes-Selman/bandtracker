@@ -6,14 +6,15 @@ CLI handler for `bandtracker watch <project>`.
 Thin layer — all logic is in core/watcher.py.
 This module only handles:
   - Argument parsing
-  - Resolving the GB bundle path
+  - Resolving the GB bundle path (from project.json or --gb override)
   - Pretty-printing startup info
   - Ctrl+C handling
   - Exit codes
 
 Usage:
+    bandtracker watch MidnightDrive
     bandtracker watch MidnightDrive --gb ~/Music/GarageBand/MidnightDrive.band
-    bandtracker watch MidnightDrive --gb ~/Music/GarageBand/MidnightDrive.band --auto
+    bandtracker watch MidnightDrive --auto
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from core.models import StorageProvider
+from core.models import Project, ProjectPaths, StorageProvider
+from core.bundle_ref import resolve_gb_bundle
 from core.watcher import ProjectWatcher, preflight
 
 
@@ -34,7 +36,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Monitors the live GarageBand .band bundle for saves, "
             "runs the diff engine, and prompts 'Save a version? [y/n]' "
-            "each time GarageBand writes to disk."
+            "each time GarageBand writes to disk. "
+            "The GB bundle path is read from project.json; use --gb to override."
         ),
     )
     p.add_argument(
@@ -44,9 +47,14 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--gb",
         dest="gb_band_path",
-        required=True,
+        required=False,
+        default=None,
         metavar="PATH",
-        help="Path to the original GarageBand .band bundle that GarageBand saves to",
+        help=(
+            "Path to the original GarageBand .band bundle that GarageBand saves to. "
+            "Overrides the path stored in project.json. "
+            "Required for projects not yet migrated with `set-gb`."
+        ),
     )
     p.add_argument(
         "--author",
@@ -85,8 +93,44 @@ def run(args: argparse.Namespace) -> int:
     root = Path(args.root).expanduser() if args.root else Path.home() / "BandTracker"
     provider = StorageProvider.detect(root)
 
-    # ── Resolve GB bundle ─────────────────────────────────────
-    gb_band_path = Path(args.gb_band_path).expanduser().resolve()
+    # ── Resolve author ────────────────────────────────────────
+    author = args.author
+    project = None
+    try:
+        paths = ProjectPaths(provider.project_path(args.project))
+        project = Project.from_json(paths.project_json.read_text())
+        if not author:
+            author = project.owner
+    except Exception:
+        pass
+    if not author:
+        author = "unknown"
+
+    # ── Resolve GB bundle path ────────────────────────────────
+    if args.gb_band_path:
+        # Explicit --gb always wins
+        gb_band_path = Path(args.gb_band_path).expanduser().resolve()
+    elif project is not None:
+        # Try stored path / alias from project.json
+        gb_band_path, resolve_err = resolve_gb_bundle(
+            project.gb_bundle_path,
+            project.gb_bundle_alias,
+        )
+        if gb_band_path is None:
+            print(
+                f"[error] {resolve_err}\n"
+                f"        Run `bandtracker set-gb {args.project} --gb <path>` "
+                f"to store the GB bundle path, or pass --gb on the command line.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print(
+            f"[error] Could not load project.json for '{args.project}'.\n"
+            f"        Pass --gb to specify the GarageBand bundle path directly.",
+            file=sys.stderr,
+        )
+        return 1
 
     # ── Preflight ─────────────────────────────────────────────
     pre = preflight(provider, args.project, gb_band_path)
@@ -99,17 +143,6 @@ def run(args: argparse.Namespace) -> int:
         for e in pre.errors:
             print(f"[error] {e}", file=sys.stderr)
         return 1
-
-    # ── Resolve author ────────────────────────────────────────
-    author = args.author
-    if not author:
-        try:
-            from core.models import Project, ProjectPaths
-            paths = ProjectPaths(provider.project_path(args.project))
-            project = Project.from_json(paths.project_json.read_text())
-            author = project.owner
-        except Exception:
-            author = "unknown"
 
     # ── Start watcher ─────────────────────────────────────────
     watcher = ProjectWatcher(

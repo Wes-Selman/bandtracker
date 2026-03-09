@@ -1,11 +1,15 @@
 """
 core/watcher.py
 
-FSEvents watcher for BandTracker — Increment 4.
+FSEvents watcher for BandTracker — Increment 4, updated in Increment 5.
 
 Monitors the live GarageBand .band bundle for saves (ProjectData changes),
 copies the new ProjectData into BandTracker's live/ folder, runs the diff
 engine, and prompts the user to save a version.
+
+Increment 5 addition:
+  - start() calls reconcile() before the Observer begins, surfacing any
+    offline edits made while the watcher was not running.
 
 Design principles:
   - Nothing in here touches argparse or sys.exit — that's cli/commands/watch.py
@@ -49,6 +53,7 @@ from core.diff.engine import byte_diff, build_description
 from core.diff.noise import load_noise_mask
 from core.diff.interpreter import interpret_changes
 from core.snapshot import take_snapshot, SnapshotResult
+from core.reconcile import reconcile
 
 
 # ─────────────────────────────────────────────────────────────
@@ -268,10 +273,27 @@ class ProjectWatcher:
     # ── Lifecycle ────────────────────────────────────────────
 
     def start(self) -> None:
-        """Start the watchdog observer in a background thread."""
+        """
+        Start the watchdog observer in a background thread.
+
+        Reconciliation runs first (synchronously) before the Observer
+        begins. If offline edits are detected, the musician is prompted
+        to snapshot them before watching begins. This ensures the watcher
+        always starts from a clean known baseline.
+        """
         if self._observer is not None:
             raise RuntimeError("Watcher already started")
 
+        # ── Reconcile before watching ──────────────────────────
+        reconcile(
+            provider=self.provider,
+            project_name=self.project_name,
+            author=self.author,
+            prompt_fn=self._prompt_fn,
+            print_fn=self._print_fn,
+        )
+
+        # ── Start Observer ─────────────────────────────────────
         watch_dir = str(self._gb_pd.parent)
         handler = _ProjectDataHandler(
             gb_project_data=self._gb_pd,

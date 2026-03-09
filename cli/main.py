@@ -17,6 +17,8 @@ from cli.commands import init as cmd_init
 from cli.commands import snapshot as cmd_snapshot
 from cli.commands import learn_noise as cmd_learn_noise
 from cli.commands import watch as cmd_watch
+from cli.commands import reconcile as cmd_reconcile
+from cli.commands import set_gb as cmd_set_gb
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_snapshot.add_subparser(subparsers)
     cmd_learn_noise.add_subparser(subparsers)
     cmd_watch.add_subparser(subparsers)
+    cmd_reconcile.add_subparser(subparsers)
+    cmd_set_gb.add_subparser(subparsers)
 
     return parser
 

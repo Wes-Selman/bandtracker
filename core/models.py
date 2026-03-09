@@ -334,6 +334,17 @@ class Project:
                         in practice — init always takes snapshot 1)
     next_snapshot_index monotonically increasing counter — never
                         reuse an index even if snapshots are deleted
+    gb_bundle_path      path to the GarageBand .band bundle that GB
+                        saves to, stored as a string (~/... when
+                        possible for cross-machine readability).
+                        None for projects initialized before Increment 5
+                        — run `bandtracker set-gb` to populate.
+    gb_bundle_alias     base64-encoded macOS NSURL bookmark for the
+                        GB bundle. Enables silent resolution if the
+                        file is moved within the same volume.
+                        None on non-macOS or when PyObjC is unavailable.
+                        Also None for pre-Increment-5 projects until
+                        `set-gb` is run.
     """
     name: str
     uuid: str
@@ -343,11 +354,15 @@ class Project:
     garageband_version: Optional[str] = None
     latest_snapshot: Optional[int] = None
     next_snapshot_index: int = 1
+    gb_bundle_path: Optional[str] = None
+    gb_bundle_alias: Optional[str] = None
 
     @classmethod
     def create(cls, name: str, owner_identifier: str,
                owner_display_name: str,
-               garageband_version: Optional[str] = None) -> Project:
+               garageband_version: Optional[str] = None,
+               gb_bundle_path: Optional[str] = None,
+               gb_bundle_alias: Optional[str] = None) -> Project:
         """Factory for a brand new project."""
         owner = Collaborator(
             display_name=owner_display_name,
@@ -360,6 +375,8 @@ class Project:
             owner=owner_identifier,
             collaborators=[owner],
             garageband_version=garageband_version,
+            gb_bundle_path=gb_bundle_path,
+            gb_bundle_alias=gb_bundle_alias,
         )
 
     def get_collaborator(self, identifier: str) -> Optional[Collaborator]:
@@ -382,6 +399,8 @@ class Project:
             "garageband_version": self.garageband_version,
             "latest_snapshot": self.latest_snapshot,
             "next_snapshot_index": self.next_snapshot_index,
+            "gb_bundle_path": self.gb_bundle_path,
+            "gb_bundle_alias": self.gb_bundle_alias,
         }
 
     @classmethod
@@ -391,6 +410,9 @@ class Project:
         d["collaborators"] = [
             Collaborator.from_dict(c) for c in d.get("collaborators", [])
         ]
+        # Backward-compatible: old project.json files won't have these fields
+        d.setdefault("gb_bundle_path", None)
+        d.setdefault("gb_bundle_alias", None)
         return cls(**d)
 
     def to_json(self) -> str:
