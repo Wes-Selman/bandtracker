@@ -23,3 +23,6 @@ BandTracker/
 
 # macOS
 .DS_Store
+
+bandtracker.egg-info/
+mnt/
