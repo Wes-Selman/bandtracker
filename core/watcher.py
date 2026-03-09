@@ -285,10 +285,14 @@ class ProjectWatcher:
             raise RuntimeError("Watcher already started")
 
         # ── Reconcile before watching ──────────────────────────
+        # Pass gb_band_path explicitly — it has already been resolved
+        # and preflight-checked by the CLI, so we don't need a second
+        # resolve_gb_bundle() call inside reconcile().
         reconcile(
             provider=self.provider,
             project_name=self.project_name,
             author=self.author,
+            gb_band_path=self.gb_band_path,
             prompt_fn=self._prompt_fn,
             print_fn=self._print_fn,
         )

@@ -23,6 +23,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from core.init import validate_project_name
 from core.models import Project, ProjectPaths, StorageProvider
 from core.bundle_ref import resolve_gb_bundle
 from core.watcher import ProjectWatcher, preflight
@@ -92,6 +93,12 @@ def run(args: argparse.Namespace) -> int:
     # ── Resolve BandTracker root ──────────────────────────────
     root = Path(args.root).expanduser() if args.root else Path.home() / "BandTracker"
     provider = StorageProvider.detect(root)
+
+    try:
+        validate_project_name(args.project)
+    except ValueError as e:
+        print(f"[error] {e}", file=__import__('sys').stderr)
+        return 1
 
     # ── Resolve author ────────────────────────────────────────
     author = args.author

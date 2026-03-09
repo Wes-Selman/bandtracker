@@ -18,6 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from core.init import validate_project_name
 from core.models import MilestoneTag, StorageProvider
 from core.snapshot import take_snapshot, PLACEHOLDER_DESCRIPTION
 
@@ -49,12 +50,6 @@ def add_subparser(subparsers) -> None:
     build_parser(subparsers).set_defaults(func=run)
 
 def build_parser(subparsers=None) -> argparse.ArgumentParser:
-    """
-    Build the argument parser for `bandtracker snapshot`.
-
-    Can be called standalone (returns a top-level parser) or
-    registered into an existing subparsers group.
-    """
     kwargs = dict(
         help="Save a named snapshot of the current project state",
         description="Take a snapshot of the current project state.",
@@ -125,16 +120,16 @@ Milestone tags:
 # ─────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> int:
-    """
-    Execute the snapshot command. Returns an exit code (0 = success).
-
-    This function is designed to be called from the main CLI entry
-    point after argument parsing.
-    """
     provider = StorageProvider.local(args.root)
 
     # Resolve project name — either from --project flag or auto-detect
     project_name = args.project
+    if project_name:
+        try:
+            validate_project_name(project_name)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
     if not project_name:
         project_name = _detect_project(provider)
         if not project_name:
@@ -192,10 +187,6 @@ def run(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────
 
 def _detect_project(provider: StorageProvider) -> str | None:
-    """
-    If there is exactly one project in the BandTracker root, use it.
-    Returns None if zero or more than one project exists.
-    """
     projects_path = provider.projects_path
     if not projects_path.exists():
         return None
@@ -207,9 +198,6 @@ def _detect_project(provider: StorageProvider) -> str | None:
 
 
 def _detect_author(provider: StorageProvider, project_name: str) -> str | None:
-    """
-    Fall back to the project owner as the author if --author is not given.
-    """
     from core.models import Project, ProjectPaths
     project_root = provider.project_path(project_name)
     paths = ProjectPaths(project_root)

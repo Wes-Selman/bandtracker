@@ -24,6 +24,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from core.init import validate_project_name
 from core.models import StorageProvider
 from core.reconcile import reconcile, ReconcileAction
 
@@ -77,6 +78,12 @@ def run(args: argparse.Namespace) -> int:
     storage_root = Path(args.storage).expanduser() if args.storage else _DEFAULT_STORAGE
     provider = StorageProvider.detect(storage_root)
     project_name = args.project
+
+    try:
+        validate_project_name(project_name)
+    except ValueError as e:
+        print(f"[error] {e}", file=__import__('sys').stderr)
+        return 1
 
     # Resolve author: prefer --author flag, fall back to project owner
     author = args.author

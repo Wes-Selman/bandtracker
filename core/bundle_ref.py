@@ -113,6 +113,12 @@ def resolve_alias(alias_b64: str) -> Optional[Path]:
     if not _IS_MACOS:
         return None
 
+    # Sanity-check the alias string before passing to the OS.
+    # A valid NSURL bookmark is at least a few hundred bytes encoded;
+    # anything outside this range is corrupt or tampered data.
+    if not isinstance(alias_b64, str) or not (64 <= len(alias_b64) <= 500_000):
+        return None
+
     try:
         from Foundation import NSURL, NSData  # type: ignore
 

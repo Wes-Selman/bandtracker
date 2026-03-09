@@ -37,7 +37,7 @@ from core.models import (
     Snapshot,
     StorageProvider,
 )
-from core.init import copy_media_to_store, hash_file
+from core.init import copy_media_to_store, hash_file, write_json_atomic
 from core.diff.engine import byte_diff, build_description
 from core.diff.noise import load_noise_mask
 from core.diff.interpreter import interpret_changes
@@ -274,14 +274,14 @@ def _write_snapshot_atomically(
         sidecar_files=[],
     )
 
-    # 3. Write manifest.json
-    manifest_data = [e.to_dict() for e in media_entries]
-    paths.snapshot_manifest(index).write_text(
-        json.dumps(manifest_data, indent=2)
+    # 3. Write manifest.json atomically
+    write_json_atomic(
+        paths.snapshot_manifest(index),
+        json.dumps([e.to_dict() for e in media_entries], indent=2),
     )
 
-    # 4. Write meta.json
-    paths.snapshot_meta(index).write_text(snap.to_json())
+    # 4. Write meta.json atomically
+    write_json_atomic(paths.snapshot_meta(index), snap.to_json())
 
     return snap
 
@@ -294,7 +294,7 @@ def _update_project_json(paths: ProjectPaths, index: int) -> None:
     project = Project.from_json(paths.project_json.read_text())
     project.latest_snapshot = index
     project.next_snapshot_index = index + 1
-    paths.project_json.write_text(project.to_json())
+    write_json_atomic(paths.project_json, project.to_json())
 
 
 # ─────────────────────────────────────────────────────────────

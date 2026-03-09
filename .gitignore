@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# BandTracker project data
+# These are large binary files managed by BandTracker itself, not git.
+# The BandTracker folder (~/BandTracker by default) should not be inside
+# this repo. If it is, exclude everything under it.
+BandTracker/
+
+# Temporary files written during atomic JSON operations
+*.tmp
+
+# macOS
+.DS_Store

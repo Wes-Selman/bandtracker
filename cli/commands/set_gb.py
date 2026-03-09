@@ -22,7 +22,7 @@ from pathlib import Path
 
 from core.models import Project, ProjectPaths, StorageProvider
 from core.bundle_ref import store_bundle_ref
-from core.init import validate_band
+from core.init import validate_band, validate_project_name, write_json_atomic
 
 _DEFAULT_STORAGE = Path.home() / "BandTracker"
 
@@ -71,6 +71,12 @@ def run(args: argparse.Namespace) -> int:
     provider = StorageProvider.detect(root)
 
     # ── Resolve and validate GB bundle ────────────────────────
+    try:
+        validate_project_name(args.project)
+    except ValueError as e:
+        print(f"[error] {e}", file=__import__('sys').stderr)
+        return 1
+
     gb_band_path = Path(args.gb_band_path).expanduser().resolve()
 
     validation = validate_band(gb_band_path)
@@ -113,7 +119,7 @@ def run(args: argparse.Namespace) -> int:
     project.gb_bundle_alias = alias
 
     try:
-        paths.project_json.write_text(project.to_json())
+        write_json_atomic(paths.project_json, project.to_json())
     except OSError as e:
         print(f"[error] Could not write project.json: {e}", file=sys.stderr)
         return 1

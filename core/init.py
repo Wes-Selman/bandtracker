@@ -229,6 +229,74 @@ def sanitize_project_name(band_path: Path) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# PROJECT NAME VALIDATION
+# ─────────────────────────────────────────────────────────────
+
+def validate_project_name(name: str) -> str:
+    """
+    Validate a project name supplied on the CLI before it is used to
+    construct any filesystem path.
+
+    Raises ValueError with a human-readable message if the name is
+    unsafe. Returns the name unchanged if it is acceptable.
+
+    Rules:
+      - Must be a non-empty string
+      - Must not contain path separators (/ or \\)
+      - Must not be '.' or '..' (relative traversal)
+      - Must not contain null bytes
+
+    These checks are defense-in-depth: ProjectPaths already routes all
+    path construction through provider.project_path(), but rejecting
+    bad names at the CLI boundary gives a clear error message before
+    any filesystem operation is attempted.
+    """
+    if not name or not name.strip():
+        raise ValueError("Project name must not be empty.")
+    if "/" in name or "\\" in name:
+        raise ValueError(
+            f"Project name must not contain path separators: {name!r}"
+        )
+    if name in {".", ".."}:
+        raise ValueError(
+            f"Project name must not be '.' or '..': {name!r}"
+        )
+    if "\x00" in name:
+        raise ValueError(
+            f"Project name must not contain null bytes: {name!r}"
+        )
+    return name
+
+
+# ─────────────────────────────────────────────────────────────
+# ATOMIC JSON WRITE
+# ─────────────────────────────────────────────────────────────
+
+def write_json_atomic(path: Path, content: str) -> None:
+    """
+    Write a JSON string to path atomically using a .tmp sibling file.
+
+    On POSIX (macOS, Linux) os.replace() is atomic — the destination
+    either has the old content or the new content, never a partial write.
+    This prevents a corrupt project.json if the process is killed mid-write.
+
+    Args:
+        path     destination path (e.g. paths.project_json)
+        content  JSON string to write (UTF-8)
+
+    Raises OSError on any I/O failure, including if the rename fails.
+    The .tmp file is cleaned up on failure.
+    """
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+# ─────────────────────────────────────────────────────────────
 # MEDIA HASHING
 # ─────────────────────────────────────────────────────────────
 
@@ -371,10 +439,10 @@ def write_initial_snapshot(
         sidecar_files=[],
     )
 
-    paths.snapshot_meta(1).write_text(snapshot.to_json())
+    write_json_atomic(paths.snapshot_meta(1), snapshot.to_json())
 
     manifest = {"entries": [e.to_dict() for e in media_entries]}
-    paths.snapshot_manifest(1).write_text(json.dumps(manifest, indent=2))
+    write_json_atomic(paths.snapshot_manifest(1), json.dumps(manifest, indent=2))
 
     return snapshot
 
@@ -476,8 +544,8 @@ def initialize(
     project.latest_snapshot = 1
     project.next_snapshot_index = 2
 
-    paths.project_json.write_text(project.to_json())
-    paths.handoff_json.write_text(Handoff.open().to_json())
+    write_json_atomic(paths.project_json, project.to_json())
+    write_json_atomic(paths.handoff_json, Handoff.open().to_json())
 
     # ── 8. Snapshot 001
     try:

@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from core.diff.noise import build_noise_mask, save_noise_mask
+from core.init import validate_project_name
 from core.models import ProjectPaths, StorageProvider
 
 
@@ -39,6 +40,12 @@ def add_subparser(subparsers) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    try:
+        validate_project_name(args.project_name)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
     root_path = Path(args.root).expanduser().resolve()
     provider = StorageProvider.local(root_path)
     project_name = args.project_name
