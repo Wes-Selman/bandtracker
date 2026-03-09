@@ -7,20 +7,20 @@ Safe rollback to any previous snapshot.
 
 Contract:
   - GarageBand must be closed before restore (hard check, not advisory)
-  - live/ ProjectData is replaced atomically: write-then-rename, never partial
-  - On any failure after the backup has been taken, live/ is rolled back
+  - Both live/ and the original GB bundle are updated atomically
+  - On any failure after backups are taken, both files are rolled back
   - A new snapshot is taken after every successful restore so the timeline
     stays append-only (the restore itself becomes part of the history)
-  - The new snapshot carries milestone=None and a description that records
-    which snapshot was restored, so the event is auditable
 
 Failure modes handled:
   - Target snapshot index does not exist
   - GarageBand process is running
   - GarageBand lock file present inside the bundle
   - Target ProjectData missing (corrupt snapshot)
+  - gb_bundle_path missing from project.json or not found on disk
+    (restore fails hard — GB would open the wrong version otherwise)
   - Insufficient disk space (checked before any write)
-  - Interrupted mid-write (backup rolled back automatically)
+  - Interrupted mid-write (both backups rolled back automatically)
 """
 
 from __future__ import annotations
@@ -73,15 +73,13 @@ class RestoreResult:
 # GarageBand open-check helpers
 # ---------------------------------------------------------------------------
 
-# GarageBand writes .lck inside the .band bundle while the project is open
 _GB_LOCK_FILENAME = ".lck"
 
 
 def _garageband_process_running() -> bool:
     """Return True if GarageBand appears to be running via pgrep.
 
-    Returns False on non-macOS platforms (where pgrep -x may not exist)
-    so that tests pass in CI without GarageBand installed.
+    Returns False on non-macOS platforms so tests pass in CI.
     """
     try:
         result = subprocess.run(
@@ -127,6 +125,37 @@ def _load_target_snapshot_description(paths: ProjectPaths, index: int) -> Option
         return None
 
 
+def _resolve_gb_project_data(project: Project) -> tuple[Optional[Path], Optional[str]]:
+    """Resolve the ProjectData path inside the original GarageBand bundle.
+
+    Returns (path, None) on success, or (None, error_message) on failure.
+
+    gb_bundle_path is stored as a ~/... string for cross-machine readability.
+    We expand ~ before use and verify the path exists.
+    """
+    if not project.gb_bundle_path:
+        return None, (
+            "gb_bundle_path is not set in project.json. "
+            "Run `bandtracker set-gb` to register the GarageBand bundle path."
+        )
+
+    gb_band = Path(project.gb_bundle_path).expanduser()
+    if not gb_band.exists():
+        return None, (
+            f"GarageBand bundle not found at {gb_band}. "
+            "If the file was moved, run `bandtracker set-gb` to update the path."
+        )
+
+    gb_pd = gb_band / "Alternatives" / "000" / "ProjectData"
+    if not gb_pd.exists():
+        return None, (
+            f"ProjectData not found inside GarageBand bundle at {gb_pd}. "
+            "The bundle may be corrupt."
+        )
+
+    return gb_pd, None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -137,8 +166,8 @@ def restore(
     target_index: int,
     *,
     author: str = "unknown",
-    force: bool = False,     # skip the GB-running check (for tests/CI)
-    dry_run: bool = False,   # validate everything but don't write
+    force: bool = False,
+    dry_run: bool = False,
 ) -> RestoreResult:
     """Restore *project_name* to the state captured in snapshot *target_index*.
 
@@ -242,7 +271,22 @@ def restore(
             )
 
     # ------------------------------------------------------------------
-    # 4. Locate live ProjectData
+    # 4. Resolve GarageBand bundle ProjectData path
+    #    Fail fast before any writes — no point restoring live/ if
+    #    GarageBand won't see the result.
+    # ------------------------------------------------------------------
+    gb_project_data, gb_err = _resolve_gb_project_data(project)
+    if gb_err:
+        return RestoreResult(
+            success=False,
+            restored_snapshot_index=target_index,
+            new_snapshot_index=None,
+            project_root=project_root,
+            errors=[gb_err],
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Locate live ProjectData
     # ------------------------------------------------------------------
     live_project_data = paths.live_project_data(project_name)
     if not live_project_data.exists():
@@ -255,11 +299,11 @@ def restore(
         )
 
     # ------------------------------------------------------------------
-    # 5. Disk-space check
+    # 6. Disk-space check
+    #    Budget: 3× source size — live backup + GB backup + new write
     # ------------------------------------------------------------------
     needed = _file_size(source_project_data)
-    # Budget: 2× source size (backup copy + new write)
-    budget = needed * 2
+    budget = needed * 3
     free = _free_bytes(project_root)
     if free < budget:
         return RestoreResult(
@@ -274,7 +318,7 @@ def restore(
         )
 
     # ------------------------------------------------------------------
-    # 6. Dry-run exits here
+    # 7. Dry-run exits here
     # ------------------------------------------------------------------
     if dry_run:
         return RestoreResult(
@@ -286,37 +330,59 @@ def restore(
         )
 
     # ------------------------------------------------------------------
-    # 7. Atomic replacement of live ProjectData
+    # 8. Atomic replacement of both live/ and GarageBand bundle
     #
     # Strategy:
-    #   a) Copy current live → temp backup (same directory = same filesystem)
-    #   b) Copy source snapshot → temp file in the same directory
-    #   c) Path.replace() temp → live ProjectData  (atomic on POSIX)
+    #   a) Backup live ProjectData
+    #   b) Backup GB ProjectData
+    #   c) Write snapshot content → live ProjectData (temp+rename)
+    #   d) Write snapshot content → GB ProjectData  (temp+rename)
     #
-    # On any failure, the backup is renamed back over live ProjectData.
+    # On any failure, _rollback() restores both from their backups.
+    # Both writes succeed or neither does.
     # ------------------------------------------------------------------
     live_pd_dir = live_project_data.parent
     live_pd_dir.mkdir(parents=True, exist_ok=True)
+    gb_pd_dir = gb_project_data.parent
 
-    # a) Backup current live ProjectData
-    backup_fd, backup_path_str = tempfile.mkstemp(
+    # a) Backup live ProjectData
+    live_backup_fd, live_backup_str = tempfile.mkstemp(
         dir=live_pd_dir, prefix=".bt_backup_", suffix=".ProjectData"
     )
-    os.close(backup_fd)
-    backup_path = Path(backup_path_str)
+    os.close(live_backup_fd)
+    live_backup = Path(live_backup_str)
+
+    # b) Backup GB ProjectData
+    gb_backup_fd, gb_backup_str = tempfile.mkstemp(
+        dir=gb_pd_dir, prefix=".bt_backup_", suffix=".ProjectData"
+    )
+    os.close(gb_backup_fd)
+    gb_backup = Path(gb_backup_str)
 
     def _rollback(reason: str) -> RestoreResult:
-        """Attempt to restore live ProjectData from backup."""
+        """Restore both live/ and GB ProjectData from their backups."""
+        # Restore live/
         try:
-            shutil.copy2(backup_path, live_project_data)
+            shutil.copy2(live_backup, live_project_data)
         except Exception as rb_err:
             errors.append(
-                f"CRITICAL: rollback also failed ({rb_err}). "
-                f"Backup is at {backup_path}. "
-                "Manually copy it to restore your project."
+                f"CRITICAL: live/ rollback failed ({rb_err}). "
+                f"Backup is at {live_backup}."
             )
         else:
-            backup_path.unlink(missing_ok=True)
+            live_backup.unlink(missing_ok=True)
+
+        # Restore GB bundle
+        try:
+            shutil.copy2(gb_backup, gb_project_data)
+        except Exception as rb_err:
+            errors.append(
+                f"CRITICAL: GarageBand bundle rollback failed ({rb_err}). "
+                f"Backup is at {gb_backup}."
+            )
+        else:
+            gb_backup.unlink(missing_ok=True)
+
         errors.append(reason)
         return RestoreResult(
             success=False,
@@ -327,10 +393,12 @@ def restore(
             warnings=warnings,
         )
 
+    # Take backups
     try:
-        shutil.copy2(live_project_data, backup_path)
+        shutil.copy2(live_project_data, live_backup)
     except Exception as exc:
-        backup_path.unlink(missing_ok=True)
+        live_backup.unlink(missing_ok=True)
+        gb_backup.unlink(missing_ok=True)
         return RestoreResult(
             success=False,
             restored_snapshot_index=target_index,
@@ -339,22 +407,45 @@ def restore(
             errors=[f"Could not back up live ProjectData: {exc}"],
         )
 
-    # b+c) Write new content atomically
     try:
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
+        shutil.copy2(gb_project_data, gb_backup)
+    except Exception as exc:
+        live_backup.unlink(missing_ok=True)
+        gb_backup.unlink(missing_ok=True)
+        return RestoreResult(
+            success=False,
+            restored_snapshot_index=target_index,
+            new_snapshot_index=None,
+            project_root=project_root,
+            errors=[f"Could not back up GarageBand ProjectData: {exc}"],
+        )
+
+    # c) Write to live/ atomically
+    try:
+        tmp_fd, tmp_str = tempfile.mkstemp(
             dir=live_pd_dir, prefix=".bt_restore_", suffix=".ProjectData"
         )
         os.close(tmp_fd)
-        tmp_path = Path(tmp_path_str)
-
+        tmp_path = Path(tmp_str)
         shutil.copy2(source_project_data, tmp_path)
-        tmp_path.replace(live_project_data)  # atomic on POSIX
-
+        tmp_path.replace(live_project_data)
     except Exception as exc:
-        return _rollback(f"Write failed during restore: {exc}")
+        return _rollback(f"Write to live/ failed: {exc}")
+
+    # d) Write to GB bundle atomically
+    try:
+        gb_tmp_fd, gb_tmp_str = tempfile.mkstemp(
+            dir=gb_pd_dir, prefix=".bt_restore_", suffix=".ProjectData"
+        )
+        os.close(gb_tmp_fd)
+        gb_tmp_path = Path(gb_tmp_str)
+        shutil.copy2(source_project_data, gb_tmp_path)
+        gb_tmp_path.replace(gb_project_data)
+    except Exception as exc:
+        return _rollback(f"Write to GarageBand bundle failed: {exc}")
 
     # ------------------------------------------------------------------
-    # 8. Confirmation snapshot
+    # 9. Confirmation snapshot
     #    Records the restore event so the timeline stays append-only.
     # ------------------------------------------------------------------
     target_desc = _load_target_snapshot_description(paths, target_index)
@@ -385,8 +476,9 @@ def restore(
             "Run `bandtracker snapshot` manually to record the restore event."
         )
 
-    # Clean up backup
-    backup_path.unlink(missing_ok=True)
+    # Clean up backups
+    live_backup.unlink(missing_ok=True)
+    gb_backup.unlink(missing_ok=True)
 
     return RestoreResult(
         success=True,
