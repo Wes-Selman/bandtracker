@@ -1,7 +1,7 @@
 """
 core/watcher.py
 
-FSEvents watcher for BandTracker — Increment 4, updated in Increment 5.
+FSEvents watcher for BandTracker — Increment 4, updated in Increments 5 & 7.
 
 Monitors the live GarageBand .band bundle for saves (ProjectData changes),
 copies the new ProjectData into BandTracker's live/ folder, runs the diff
@@ -10,6 +10,16 @@ engine, and prompts the user to save a version.
 Increment 5 addition:
   - start() calls reconcile() before the Observer begins, surfacing any
     offline edits made while the watcher was not running.
+
+Increment 7 addition:
+  - A second watchdog handler monitors handoff.json for changes written
+    by the other machine (or by a local `bandtracker handoff/release/claim`
+    command in a different terminal session).
+  - On change: silently re-reads handoff.json and updates internal state.
+    No terminal output, no OS notification — the state is available via
+    watcher.current_handoff for any caller that wants to surface it.
+  - The handoff handler uses the same debounce pattern as the ProjectData
+    handler to avoid double-firing on atomic writes (.tmp → rename).
 
 Design principles:
   - Nothing in here touches argparse or sys.exit — that's cli/commands/watch.py
@@ -34,6 +44,11 @@ Flow on each detected save:
   4. y → call take_snapshot() with auto-generated or user-provided description
   5. n → update live ProjectData silently (keep live/ in sync without snapping)
   6. Loop — watchdog keeps watching
+
+Flow on handoff.json change (Increment 7):
+  1. Re-read handoff.json from disk
+  2. Update self.current_handoff silently
+  3. No terminal output, no prompt
 """
 
 from __future__ import annotations
@@ -48,7 +63,7 @@ from typing import Callable, Optional
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from core.models import Project, ProjectPaths, StorageProvider
+from core.models import Handoff, Project, ProjectPaths, StorageProvider
 from core.diff.engine import byte_diff, build_description
 from core.diff.noise import load_noise_mask
 from core.diff.interpreter import interpret_changes
@@ -144,7 +159,7 @@ def _sync_live_project_data(
 
 
 # ─────────────────────────────────────────────────────────────
-# WATCHDOG EVENT HANDLER
+# WATCHDOG EVENT HANDLER — ProjectData
 # ─────────────────────────────────────────────────────────────
 
 class _ProjectDataHandler(FileSystemEventHandler):
@@ -205,12 +220,82 @@ class _ProjectDataHandler(FileSystemEventHandler):
 
 
 # ─────────────────────────────────────────────────────────────
+# WATCHDOG EVENT HANDLER — handoff.json (Increment 7)
+# ─────────────────────────────────────────────────────────────
+
+class _HandoffHandler(FileSystemEventHandler):
+    """
+    Watches the project root directory for changes to handoff.json.
+
+    On any write to handoff.json (including atomic .tmp → rename writes
+    from `bandtracker handoff/release/claim`), silently re-reads the
+    file and calls on_handoff_change() with the new Handoff state.
+
+    Uses the same debounce pattern as _ProjectDataHandler to avoid
+    double-firing on atomic rename sequences.
+
+    Silent by design — no terminal output from within this handler.
+    The caller (ProjectWatcher) decides what to do with the new state.
+    """
+
+    DEBOUNCE_SECONDS = 1.0
+
+    def __init__(
+        self,
+        handoff_json_path: Path,
+        on_handoff_change: Callable[[Handoff], None],
+    ):
+        super().__init__()
+        self._handoff_path = handoff_json_path
+        self._on_handoff_change = on_handoff_change
+        self._lock = threading.Lock()
+        self._last_fired: float = 0.0
+
+    def _is_target(self, path_str: str) -> bool:
+        try:
+            return Path(path_str).resolve() == self._handoff_path.resolve()
+        except Exception:
+            return False
+
+    def _maybe_fire(self, path_str: str) -> None:
+        if not self._is_target(path_str):
+            return
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_fired < self.DEBOUNCE_SECONDS:
+                return
+            self._last_fired = now
+        # Read and parse outside the lock — I/O can be slow
+        try:
+            text = self._handoff_path.read_text(encoding="utf-8")
+            new_handoff = Handoff.from_json(text)
+            self._on_handoff_change(new_handoff)
+        except Exception:
+            # Corrupt or mid-write file — ignore, next write will retry
+            pass
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self._maybe_fire(event.src_path)
+
+    def on_created(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self._maybe_fire(event.src_path)
+
+    def on_moved(self, event: FileSystemEvent) -> None:
+        if not event.is_directory:
+            self._maybe_fire(event.dest_path)
+
+
+# ─────────────────────────────────────────────────────────────
 # WATCHER
 # ─────────────────────────────────────────────────────────────
 
 class ProjectWatcher:
     """
     Watches a GarageBand .band bundle for saves and offers to snapshot.
+    Also silently watches handoff.json for lock state changes from
+    the other machine (Increment 7).
 
     Usage:
         watcher = ProjectWatcher(provider, project_name, author)
@@ -232,6 +317,13 @@ class ProjectWatcher:
         print_fn        callable(str) -> None for output (default: print())
         auto_yes        if True, always answer "y" without prompting
                         (useful for --auto flag or testing)
+
+    Attributes:
+        current_handoff     most recently observed Handoff state.
+                            Updated silently whenever handoff.json changes.
+                            None until start() is called.
+        handoff_changes     list of Handoff states observed since start(),
+                            in order. Useful for testing.
     """
 
     def __init__(
@@ -267,6 +359,11 @@ class ProjectWatcher:
         self._stop_event = threading.Event()
         self._event_lock = threading.Lock()  # serialize on_save calls
 
+        # Handoff state — updated silently by _HandoffHandler (Increment 7)
+        self.current_handoff: Optional[Handoff] = None
+        self._handoff_lock = threading.Lock()
+        self.handoff_changes: list[Handoff] = []
+
         # Collected for testing / logging
         self.events: list[WatchEvent] = []
 
@@ -280,14 +377,21 @@ class ProjectWatcher:
         begins. If offline edits are detected, the musician is prompted
         to snapshot them before watching begins. This ensures the watcher
         always starts from a clean known baseline.
+
+        The initial handoff state is loaded from disk before the observer
+        starts so current_handoff is never None after start() returns.
         """
         if self._observer is not None:
             raise RuntimeError("Watcher already started")
 
+        # ── Load initial handoff state ─────────────────────────
+        try:
+            text = self._paths.handoff_json.read_text(encoding="utf-8")
+            self.current_handoff = Handoff.from_json(text)
+        except Exception:
+            self.current_handoff = None
+
         # ── Reconcile before watching ──────────────────────────
-        # Pass gb_band_path explicitly — it has already been resolved
-        # and preflight-checked by the CLI, so we don't need a second
-        # resolve_gb_bundle() call inside reconcile().
         reconcile(
             provider=self.provider,
             project_name=self.project_name,
@@ -298,14 +402,30 @@ class ProjectWatcher:
         )
 
         # ── Start Observer ─────────────────────────────────────
-        watch_dir = str(self._gb_pd.parent)
-        handler = _ProjectDataHandler(
+        # One Observer, two schedules:
+        #   - ProjectData changes inside the GB bundle directory
+        #   - handoff.json changes in the project root directory
+
+        self._observer = Observer()
+
+        # Schedule 1: GB bundle directory → ProjectData changes
+        pd_handler = _ProjectDataHandler(
             gb_project_data=self._gb_pd,
             on_save=self._on_save,
         )
+        self._observer.schedule(pd_handler, str(self._gb_pd.parent), recursive=False)
 
-        self._observer = Observer()
-        self._observer.schedule(handler, watch_dir, recursive=False)
+        # Schedule 2: project root → handoff.json changes
+        handoff_handler = _HandoffHandler(
+            handoff_json_path=self._paths.handoff_json,
+            on_handoff_change=self._on_handoff_change,
+        )
+        self._observer.schedule(
+            handoff_handler,
+            str(self._paths.project_root),
+            recursive=False,
+        )
+
         self._observer.start()
         self._print_fn(
             f"Watching {self.gb_band_path.name} — "
@@ -333,6 +453,18 @@ class ProjectWatcher:
 
     def __exit__(self, *_) -> None:
         self.stop()
+
+    # ── Handoff state update (Increment 7) ───────────────────
+
+    def _on_handoff_change(self, new_handoff: Handoff) -> None:
+        """
+        Called silently by _HandoffHandler when handoff.json changes.
+        Updates current_handoff and appends to handoff_changes log.
+        No terminal output — silent by design.
+        """
+        with self._handoff_lock:
+            self.current_handoff = new_handoff
+            self.handoff_changes.append(new_handoff)
 
     # ── Core save handler ─────────────────────────────────────
 

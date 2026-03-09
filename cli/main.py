@@ -20,6 +20,9 @@ from cli.commands import watch as cmd_watch
 from cli.commands import reconcile as cmd_reconcile
 from cli.commands import set_gb as cmd_set_gb
 from cli.commands import restore as cmd_restore
+from cli.commands import handoff as cmd_handoff
+from cli.commands import release as cmd_release
+from cli.commands import claim as cmd_claim
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_reconcile.add_subparser(subparsers)
     cmd_set_gb.add_subparser(subparsers)
     cmd_restore.add_subparser(subparsers)
+    cmd_handoff.add_subparser(subparsers)
+    cmd_release.add_subparser(subparsers)
+    cmd_claim.add_subparser(subparsers)
 
     return parser
 
