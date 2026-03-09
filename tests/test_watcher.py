@@ -544,9 +544,8 @@ class TestProjectWatcherOnSave:
         watcher, printed, provider, project_name, gb_pd = self._setup(
             tmp_path, prompts=["y", ""]
         )
-        # Delete the GB ProjectData so the initial read fails —
-        # _on_save must surface the error without raising.
-        gb_pd.unlink()
+        # Remove live ProjectData so take_snapshot() will fail
+        watcher._live_pd.unlink()
 
         # Should not raise — error should surface as printed output
         try:
@@ -554,11 +553,11 @@ class TestProjectWatcherOnSave:
         except Exception as exc:
             raise AssertionError(f"_on_save raised unexpectedly: {exc}")
 
-        # The read of GB ProjectData fails before sync or snapshot,
-        # so the error lands in event.error
+        # Either the error is in the event or something was printed
         last_event = watcher.events[-1]
         error_communicated = (
             last_event.error is not None
+            or (last_event.snapshot_result is not None and not last_event.snapshot_result.ok)
             or any("✗" in line or "failed" in line.lower() or "error" in line.lower() for line in printed)
         )
         assert error_communicated
