@@ -12,6 +12,7 @@ Every save, every decision, every handoff — tracked automatically and describe
 - **Restores** any previous version in one command
 - **Hands off** a project to a collaborator with a note, and detects if you both edit at once
 - **Attaches** notes, lyrics, and bounces to specific versions — with inheritance so living documents follow the project forward
+- **Manages** project status, history, collaborators, and renames from the command line
 
 ## What it doesn't do
 
@@ -25,11 +26,12 @@ core/               Python — all business logic, no I/O assumptions
   init.py               project initialization, atomic writes, path validation
   snapshot.py           snapshot writer + media deduplication
   restore.py            safe rollback
-  watcher.py            FSEvents file watcher (foreground today, daemon in Increment 12)
+  watcher.py            FSEvents file watcher (foreground today, daemon in Increment 14)
   reconcile.py          launch-time check for offline edits
   handoff_ops.py        soft lock + conflict detection
   sidecar.py            notes, lyrics, bounce attachments with inheritance
   bundle_ref.py         macOS NSURL bookmark storage for .band bundle path
+  project_ops.py        status, log, collaborator management, rename
   diff/
     engine.py           binary diff against ProjectData
     noise.py            noise mask (filters GarageBand's spurious save noise)
@@ -37,6 +39,7 @@ core/               Python — all business logic, no I/O assumptions
 
 cli/                Python — command-line interface (Phases 1–2)
   main.py               command router
+  resolver.py           shared CLI resolution (--root, --project, --author)
   commands/             one file per subcommand
     init.py             bandtracker init
     snapshot.py         bandtracker snapshot
@@ -49,12 +52,17 @@ cli/                Python — command-line interface (Phases 1–2)
     attach.py           bandtracker attach
     detach.py           bandtracker detach
     attachments.py      bandtracker attachments
+    status.py           bandtracker status
+    log.py              bandtracker log
+    add_collaborator.py bandtracker add-collaborator
+    remove_collaborator.py bandtracker remove-collaborator
+    rename.py           bandtracker rename
     learn_noise.py      bandtracker learn-noise
     set_gb.py           bandtracker set-gb
 
-app/                Swift — macOS menu bar + full window app (Phase 3, Increment 13+)
+app/                Swift — macOS menu bar + full window app (Phase 3, Increment 16+)
 
-tests/              pytest test suite (442 passing, 4 skipped)
+tests/              pytest test suite (501 passing, 4 skipped)
 docs/               design documents and delivery plan
 ```
 
@@ -72,8 +80,8 @@ See [docs/folder-structure.md](docs/folder-structure.md) for the full on-disk la
 
 See [docs/increments.md](docs/increments.md) for the full incremental delivery plan.
 
-**Current status: Increment 8 complete.**
-CLI foundation is fully functional. Next: Increment 9 — project management commands.
+**Current status: Increment 9 complete.**
+CLI foundation is fully functional. Next: Increment 10 — diff command + structural fallback.
 
 ## Running tests
 

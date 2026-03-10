@@ -14,7 +14,7 @@ Pick up from any increment after a break — the status column tells you where t
 | 1 — CLI foundation | 6 | Restore | ✅ Complete |
 | 1 — CLI foundation | 7 | Handoff | ✅ Complete |
 | 1 — CLI foundation | 8 | Sidecar documents | ✅ Complete |
-| 1 — CLI foundation | 9 | Project management | 🔄 In progress |
+| 1 — CLI foundation | 9 | Project management | ✅ Complete |
 | 1 — CLI foundation | 10 | Diff command + structural fallback | ⬜ Not started |
 | 2 — Bridge | 11 | band-cartographer evaluation | ⬜ Not started |
 | 2 — Bridge | 12 | JSON output layer | ⬜ Not started |
@@ -80,7 +80,7 @@ Also delivers: `bandtracker learn-noise` — interactive noise mask builder.
 
 Watchdog FSEvents watcher, debounced save detection, prompts "Save a version? [y/n]".
 Designed to stay decoupled from the CLI invocation — will become a background daemon
-in Increment 13.
+in Increment 14.
 
 **Key files:** `core/watcher.py`, `cli/commands/watch.py`, `tests/test_watcher.py`
 
@@ -135,7 +135,7 @@ change — old plain-string sidecar entries read back as `type=version`.
 
 ---
 
-## Increment 9 — Project management 🔄
+## Increment 9 — Project management ✅
 
 **Delivers:** `bandtracker status`, `bandtracker log`, `bandtracker add-collaborator`,
 `bandtracker remove-collaborator`, `bandtracker rename`
@@ -144,7 +144,16 @@ change — old plain-string sidecar entries read back as `type=version`.
 - `log` — list snapshots with index, description, author, timestamp, milestone
 - `add-collaborator --name "Maya" --id maya@email.com` — adds to `project.json`
 - `remove-collaborator --id maya@email.com` — removes from `project.json`
-- `rename <new-name>` — renames project folder and updates `project.json`
+- `rename <new-name>` — renames project folder, live bundle, GB bundle (best-effort),
+  and updates `project.json` including `gb_bundle_path`/`gb_bundle_alias`
+
+Also delivers: `cli/resolver.py` — shared CLI resolution for `--root`, `--project`,
+`--author` flags and env vars. All existing commands updated to use it.
+
+**Key files:** `core/project_ops.py`, `cli/resolver.py`, `cli/commands/status.py`,
+`cli/commands/log.py`, `cli/commands/add_collaborator.py`,
+`cli/commands/remove_collaborator.py`, `cli/commands/rename.py`,
+`tests/test_project_ops.py`
 
 ---
 
@@ -163,6 +172,29 @@ placeholder with a meaningful summary when interpretation fails:
 Three-tier description quality: interpreted → structural → identical.
 Applies everywhere descriptions are generated — snapshot, reconcile, watch, diff.
 
+**Core API:** New `core/diff_ops.py` with a `compare()` function that takes two
+ProjectData byte sources, runs the full pipeline (noise mask → byte_diff →
+interpret → describe), and returns a typed result dataclass. The diff command's
+CLI layer consumes this.
+
+`build_description()` in `core/diff/engine.py` gets the structural fallback tier —
+when interpreted results are empty but byte_diff found changes, produce a summary
+from change count, region count, and size delta instead of falling through to
+"Work in progress".
+
+**Files to read:**
+- `core/diff/engine.py` — byte_diff(), build_description(), DiffResult, ByteRange
+- `core/diff/interpreter.py` — interpret_changes()
+- `core/diff/noise.py` — load_noise_mask()
+- `core/snapshot.py` — _auto_describe() and _compute_diff_summary() show current pipeline wiring
+- `core/reconcile.py` — another diff pipeline consumer
+- `core/init.py` — write_json_atomic(), validate_project_name() (imported by new code)
+- `cli/resolver.py` — shared CLI resolution (new in Increment 9)
+- `cli/commands/status.py` — current CLI pattern using resolver
+- `tests/test_diff.py` — existing diff engine tests
+
+**Depends on:** Increment 3 (diff engine), Increment 9 (resolver pattern)
+
 ---
 
 ## Increment 11 — band-cartographer evaluation ⬜
@@ -180,6 +212,13 @@ that the diff engine has a public-facing surface.
 package and replace `core/diff/interpreter.py` with a proper dependency.
 If not, document what additional research is needed and defer.
 
+**Files to read:**
+- `core/diff/interpreter.py` — current interpreter, ported from band-cartographer
+- `core/diff/engine.py` — how interpreter results are consumed
+- band-cartographer repo — current state of field mapping research
+
+**Depends on:** Increment 10 (diff command gives interpreter a public surface)
+
 ---
 
 ## Increment 12 — JSON output layer ⬜
@@ -190,60 +229,52 @@ structured JSON. This is the contract the Swift app will consume.
 Every subcommand gets `--json`. Output is stable, versioned, and documented.
 Swift calls the CLI via `Process` and parses stdout.
 
+**Core API:** No new core functions — this is a CLI-layer change. Each command's
+`run()` function checks `args.json`, and if set, serializes the result dataclass
+via `dataclasses.asdict()` → `json.dumps()` to stdout instead of the human-readable
+output. Result dataclasses are already JSON-safe by design (constraint #8).
+
+**Files to read:**
+- `cli/commands/status.py` — representative command with a result dataclass
+- `cli/commands/log.py` — list output that needs JSON array form
+- `core/project_ops.py` — StatusResult, LogResult etc. for serialization shape
+- Every `cli/commands/*.py` file — all need `--json` added
+
+**Depends on:** All result dataclasses being JSON-safe (enforced since Increment 0)
+
 ---
 
 ## Increment 13 — Identity foundation + onboarding ⬜
 
-**Goal:** Establish a persistent per-person identity on each device, and provide
-a guided onboarding flow for both first-time solo users and incoming collaborators.
+**Goal:** First-run config and `~/.bandtracker/config.json`. CLI resolution
+order gains a config file step: flags → env vars → config file → error.
 
-The right framing here is **people, not machines**. A person has a stable identity
-that travels with them across devices. The local config file is v1 of what will
-eventually be a proper auth token — the architecture must support that migration
-without touching business logic.
+**Core API:** New `core/config.py` with `load_config()` / `save_config()`.
+`cli/resolver.py` gains a config file fallback between env vars and error.
 
-**Delivers:** `bandtracker configure`, `bandtracker join`
+**Files to read:**
+- `cli/resolver.py` — current resolution order (will gain config file step)
+- `cli/commands/init.py` — onboarding flow, may need config prompts
+- `core/models.py` — identifier model, to verify no format assumptions
 
-`bandtracker configure` — first-time setup. Sets display name, identifier, and root
-path. Written to `~/.bandtracker/config.json`. All commands read identity from this
-file instead of requiring `--author` on every invocation. The identifier is an opaque
-string — no format assumptions, no parsing. v1 is user-supplied (e.g. an email they
-choose), designed to be replaced by a token in Phase 4 without changing anything else.
-
-`bandtracker join <shared-folder-path>` — incoming collaborator onboarding. Points
-BandTracker at an existing shared root, registers the person against the project using
-their configured identity, and sets up the watcher. Does not re-initialize. Reads
-the existing snapshot history as-is.
-
-**Config file:** `~/.bandtracker/config.json`
-```json
-{
-  "display_name": "Jordan",
-  "identifier": "jordan@email.com",
-  "root_path": "/Users/jordan/Dropbox/BandTracker"
-}
-```
-
-**Design constraints:**
-- `~/.bandtracker/config.json` is the only place that knows how identity was established
-- All other code reads `config.identifier` opaquely — same as today with `BANDTRACKER_AUTHOR`
-- `--author`, `--root`, and `BANDTRACKER_*` env vars remain as overrides for power users
-- Auth is a drop-in replacement in Phase 4, not a refactor
-
-**Onboarding scenarios covered:**
-- Solo first-time user: `configure` then `init`
-- Incoming collaborator: `configure` then `join <shared-folder>`
-- Existing CLI user migrating: `configure` populates config, all existing projects continue working
+**Depends on:** Increment 9 (resolver consolidation)
 
 ---
 
 ## Increment 14 — Background daemon ⬜
 
-**Goal:** `bandtracker watch` becomes a background process rather than a
-foreground command. Core watcher logic is already decoupled from the CLI
+**Goal:** Convert `bandtracker watch` from foreground terminal process to a
+launchd-managed background daemon. Core watcher logic is already decoupled from the CLI
 invocation pattern in anticipation of this.
 
 IPC between daemon and SwiftUI app via local socket or file-based events.
+
+**Files to read:**
+- `core/watcher.py` — ProjectWatcher, already CLI-decoupled
+- `cli/commands/watch.py` — current foreground entry point
+- `core/reconcile.py` — called at watcher startup, must work in daemon context
+
+**Depends on:** Increment 4 (watcher), Increment 5 (reconcile at startup)
 
 ---
 
@@ -271,6 +302,20 @@ and two-different-people scenarios, as these have different failure modes.
 - `StorageProvider` currently only has a working `local` implementation — `detect()`
   identifies iCloud and Dropbox paths but no provider-specific handling exists yet
 - Sync delay handling — shared folders have propagation latency the watcher may need to tolerate
+- Name reconciliation — if Machine A renames a project while Machine B is offline,
+  Machine B should detect the mismatch between project.json name and folder name on
+  next startup (see Bug C)
+- Shared-storage policy for GB bundles — may require the GB bundle to live inside
+  the BandTracker project folder for shared-storage projects (see Bug C)
+
+**Files to read:**
+- `core/models.py` — StorageProvider, StorageProviderType
+- `core/watcher.py` — ProjectWatcher, _HandoffHandler
+- `core/reconcile.py` — offline edit detection
+- `core/handoff_ops.py` — lock state machine
+- `core/project_ops.py` — rename_project() and its best-effort GB rename (Bug C)
+
+**Depends on:** Increment 13 (identity/config), Increment 14 (daemon)
 
 **Definition of done:** Two people, one shared folder, one GarageBand project, full
 handoff cycle completed in both directions without manual intervention or data loss.
@@ -290,10 +335,25 @@ changes via FSEvents.
 
 Lives in `app/` within this repo.
 
----
-## Increment 17 — Future Considerations ⬜
+**Files to read:**
+- `cli/main.py` — command list (each becomes a Swift-callable operation)
+- Increment 12 output — JSON schemas for every command
 
-Branch/fork resolution — When two machines diverge (e.g. both edit while offline), offer three resolution paths: (1) pick one timeline as canonical, (2) fork the divergent version into a new project, (3) create a snapshot in one project from a specific snapshot in another. Depends on Increment 15 findings about real-world divergence patterns.
+**Depends on:** Increment 12 (JSON output), Increment 14 (daemon)
+
+---
+
+## Post-launch (Increment 17+) ⬜
+
+**Deferred items:**
+- Conflict resolution, cloud storage backend, full auth, push notifications, iPad
+- **Branch/fork resolution** — When two machines diverge (e.g. both edit while
+  offline), offer three resolution paths: (1) pick one timeline as canonical,
+  (2) fork the divergent version into a new project ("view as new project"),
+  (3) create a snapshot in one project from a specific snapshot in another.
+  Depends on Increment 15 findings about real-world divergence patterns.
+
+---
 
 ## Architectural constraints
 
@@ -310,16 +370,5 @@ These apply to every increment:
 3. **`bandtracker watch` decoupled from CLI** — nothing in `core/watcher.py` assumes
    it's being called from a terminal. Required for the Increment 14 daemon transition.
 
-4. **Swift integration model** — Swift calls the CLI via `Process`, consumes `--json`
-   output, watches filesystem via FSEvents. The CLI is the API.
-
-5. **Storage abstraction is intentional** — `StorageProvider` exists for a reason.
-   Never hardcode filesystem assumptions outside of `ProjectPaths`.
-
-6. **Diff engine resilience — three-tier descriptions** — interpreted → structural →
-   identical. The structural tier is always producible. Protects against GarageBand
-   format updates and enables Logic Pro support from day one.
-
-7. **Result dataclasses everywhere** — all core functions return a typed result with
-   `.ok`, `.errors`, `.warnings`. No exceptions bubble to the CLI. No `sys.exit` in
-   `core/`.
+4. **Storage abstraction intentional** — `StorageProvider` and `ProjectPaths` exist
+   for a reason. Never hardcode path assumptions outside these classes.
