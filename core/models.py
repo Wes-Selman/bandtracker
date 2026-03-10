@@ -13,6 +13,14 @@ Storage independence: nothing in these models assumes where the
 project folder lives. Paths are always resolved by the storage
 provider and passed in — never constructed from assumptions inside
 these classes.
+
+Increment 8 changes:
+  - Added SidecarType enum (version | project)
+  - Added SidecarEntry dataclass (filename + type)
+  - Snapshot.sidecar_files changed from list[str] to list[SidecarEntry]
+  - Snapshot.from_dict handles backward-compat: plain strings read back
+    as SidecarEntry(filename=s, type=SidecarType.VERSION)
+  - Snapshot.to_dict serialises sidecar_files as list of dicts
 """
 
 from __future__ import annotations
@@ -61,6 +69,62 @@ class LockState(str, Enum):
     """
     OPEN   = "open"    # no handoff in progress, single user
     LOCKED = "locked"  # a specific collaborator has the ball
+
+
+class SidecarType(str, Enum):
+    """
+    Attachment lifecycle type.
+
+    VERSION  — pinned to one snapshot only. No inheritance.
+               "This bounce.m4a belongs to v7 specifically."
+
+    PROJECT  — living document. Inherits forward across snapshots.
+               The most recent attachment of the same filename wins
+               (shadowing). Detaching from a later snapshot reveals
+               the previous version rather than erasing history.
+               "lyrics.txt is always the current lyrics file."
+    """
+    VERSION = "version"
+    PROJECT = "project"
+
+
+# ─────────────────────────────────────────────────────────────
+# SIDECAR ENTRY
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class SidecarEntry:
+    """
+    A single file attached to a snapshot.
+
+    filename    the filename as stored in snapshots/{n}/sidecar/
+                e.g. "bounce.m4a", "notes.md", "lyrics.txt"
+    type        VERSION (snapshot-pinned) or PROJECT (inheriting)
+    """
+    filename: str
+    type: SidecarType
+
+    def to_dict(self) -> dict:
+        return {
+            "filename": self.filename,
+            "type": self.type.value,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> SidecarEntry:
+        return cls(
+            filename=d["filename"],
+            type=SidecarType(d["type"]),
+        )
+
+    @classmethod
+    def from_legacy(cls, s: str) -> SidecarEntry:
+        """
+        Backward-compat: pre-Increment-8 sidecar_files entries were
+        plain strings. Treat them as VERSION (snapshot-pinned), which
+        is the conservative default — they were always snapshot-specific.
+        """
+        return cls(filename=s, type=SidecarType.VERSION)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -199,9 +263,13 @@ class Snapshot:
                     mix, or handoff. At most one per snapshot.
     media           list of ManifestEntry for every audio file that
                     existed in the project at this snapshot
-    sidecar_files   list of filenames attached to this snapshot
-                    e.g. ["bounce.m4a", "notes.md", "lyrics.txt"]
-                    actual files live in snapshots/{index}/sidecar/
+    sidecar_files   list of SidecarEntry for files attached to this
+                    snapshot. Each entry carries a filename and a
+                    SidecarType (version or project).
+                    Actual files live in snapshots/{index}/sidecar/.
+                    Backward-compat: pre-Increment-8 JSON stored plain
+                    strings here — from_dict promotes them to
+                    SidecarEntry(type=VERSION).
     """
     index: int
     description: str
@@ -210,7 +278,7 @@ class Snapshot:
     diff_summary: list[str] = field(default_factory=list)
     milestone: Optional[MilestoneTag] = None
     media: list[ManifestEntry] = field(default_factory=list)
-    sidecar_files: list[str] = field(default_factory=list)
+    sidecar_files: list[SidecarEntry] = field(default_factory=list)
 
     @property
     def folder_name(self) -> str:
@@ -222,10 +290,16 @@ class Snapshot:
         return f"v{self.index}"
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["timestamp"] = self.timestamp.isoformat()
-        d["milestone"] = self.milestone.value if self.milestone else None
-        d["media"] = [m.to_dict() for m in self.media]
+        d = {
+            "index": self.index,
+            "description": self.description,
+            "timestamp": self.timestamp.isoformat(),
+            "author": self.author,
+            "diff_summary": self.diff_summary,
+            "milestone": self.milestone.value if self.milestone else None,
+            "media": [m.to_dict() for m in self.media],
+            "sidecar_files": [s.to_dict() for s in self.sidecar_files],
+        }
         return d
 
     @classmethod
@@ -234,6 +308,18 @@ class Snapshot:
         d["timestamp"] = datetime.fromisoformat(d["timestamp"])
         d["milestone"] = MilestoneTag(d["milestone"]) if d["milestone"] else None
         d["media"] = [ManifestEntry.from_dict(m) for m in d.get("media", [])]
+
+        # Backward-compat: sidecar_files may be list[str] (pre-Increment-8)
+        # or list[dict] (Increment-8+). Handle both transparently.
+        raw_sidecars = d.get("sidecar_files", [])
+        sidecar_entries: list[SidecarEntry] = []
+        for item in raw_sidecars:
+            if isinstance(item, str):
+                sidecar_entries.append(SidecarEntry.from_legacy(item))
+            else:
+                sidecar_entries.append(SidecarEntry.from_dict(item))
+        d["sidecar_files"] = sidecar_entries
+
         return cls(**d)
 
     def to_json(self) -> str:
@@ -496,6 +582,9 @@ class ProjectPaths:
 
     def snapshot_sidecar(self, index: int) -> Path:
         return self.snapshot(index) / "sidecar"
+
+    def snapshot_sidecar_file(self, index: int, filename: str) -> Path:
+        return self.snapshot_sidecar(index) / filename
 
     def media_file(self, content_hash: str, suffix: str = ".aif") -> Path:
         return self.media / f"{content_hash}{suffix}"

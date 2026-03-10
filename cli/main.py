@@ -23,6 +23,9 @@ from cli.commands import restore as cmd_restore
 from cli.commands import handoff as cmd_handoff
 from cli.commands import release as cmd_release
 from cli.commands import claim as cmd_claim
+from cli.commands import attach as cmd_attach
+from cli.commands import detach as cmd_detach
+from cli.commands import attachments as cmd_attachments
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_handoff.add_subparser(subparsers)
     cmd_release.add_subparser(subparsers)
     cmd_claim.add_subparser(subparsers)
+    cmd_attach.add_subparser(subparsers)
+    cmd_detach.add_subparser(subparsers)
+    cmd_attachments.add_subparser(subparsers)
 
     return parser
 
