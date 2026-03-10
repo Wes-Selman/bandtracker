@@ -18,10 +18,11 @@ Pick up from any increment after a break — the status column tells you where t
 | 1 — CLI foundation | 10 | Diff command + structural fallback | ⬜ Not started |
 | 2 — Bridge | 11 | band-cartographer evaluation | ⬜ Not started |
 | 2 — Bridge | 12 | JSON output layer | ⬜ Not started |
-| 2 — Bridge | 13 | Background daemon | ⬜ Not started |
-| 3 — MVP front-end | 14 | Two-machine collaboration validation | ⬜ Not started |
-| 3 — MVP front-end | 15 | Menu bar + full window SwiftUI app | ⬜ Not started |
-| 4 — Post-launch | 16+ | Conflict resolution, shared storage, auth, push notifications, iPad | ⬜ Deferred |
+| 2 — Bridge | 13 | Identity foundation + onboarding | ⬜ Not started |
+| 2 — Bridge | 14 | Background daemon | ⬜ Not started |
+| 3 — MVP front-end | 15 | Multi-person collaboration validation | ⬜ Not started |
+| 3 — MVP front-end | 16 | Menu bar + full window SwiftUI app | ⬜ Not started |
+| 4 — Post-launch | 17+ | Conflict resolution, cloud storage backend, full auth, push notifications, iPad | ⬜ Deferred |
 
 ---
 
@@ -191,7 +192,52 @@ Swift calls the CLI via `Process` and parses stdout.
 
 ---
 
-## Increment 13 — Background daemon ⬜
+## Increment 13 — Identity foundation + onboarding ⬜
+
+**Goal:** Establish a persistent per-person identity on each device, and provide
+a guided onboarding flow for both first-time solo users and incoming collaborators.
+
+The right framing here is **people, not machines**. A person has a stable identity
+that travels with them across devices. The local config file is v1 of what will
+eventually be a proper auth token — the architecture must support that migration
+without touching business logic.
+
+**Delivers:** `bandtracker configure`, `bandtracker join`
+
+`bandtracker configure` — first-time setup. Sets display name, identifier, and root
+path. Written to `~/.bandtracker/config.json`. All commands read identity from this
+file instead of requiring `--author` on every invocation. The identifier is an opaque
+string — no format assumptions, no parsing. v1 is user-supplied (e.g. an email they
+choose), designed to be replaced by a token in Phase 4 without changing anything else.
+
+`bandtracker join <shared-folder-path>` — incoming collaborator onboarding. Points
+BandTracker at an existing shared root, registers the person against the project using
+their configured identity, and sets up the watcher. Does not re-initialize. Reads
+the existing snapshot history as-is.
+
+**Config file:** `~/.bandtracker/config.json`
+```json
+{
+  "display_name": "Jordan",
+  "identifier": "jordan@email.com",
+  "root_path": "/Users/jordan/Dropbox/BandTracker"
+}
+```
+
+**Design constraints:**
+- `~/.bandtracker/config.json` is the only place that knows how identity was established
+- All other code reads `config.identifier` opaquely — same as today with `BANDTRACKER_AUTHOR`
+- `--author`, `--root`, and `BANDTRACKER_*` env vars remain as overrides for power users
+- Auth is a drop-in replacement in Phase 4, not a refactor
+
+**Onboarding scenarios covered:**
+- Solo first-time user: `configure` then `init`
+- Incoming collaborator: `configure` then `join <shared-folder>`
+- Existing CLI user migrating: `configure` populates config, all existing projects continue working
+
+---
+
+## Increment 14 — Background daemon ⬜
 
 **Goal:** `bandtracker watch` becomes a background process rather than a
 foreground command. Core watcher logic is already decoupled from the CLI
@@ -201,30 +247,37 @@ IPC between daemon and SwiftUI app via local socket or file-based events.
 
 ---
 
-## Increment 14 — Two-machine collaboration validation ⬜
+## Increment 15 — Multi-person collaboration validation ⬜
 
-**Goal:** Verify the full collaboration flow works end to end across two real machines
-sharing a project folder via Dropbox or iCloud Drive.
+**Goal:** Verify the full collaboration flow works end to end between two real
+people sharing a project folder via Dropbox or iCloud Drive. The primitive is
+**people, not machines** — the test should cover both same-person-two-devices
+and two-different-people scenarios, as these have different failure modes.
 
-**What needs to be tested:**
-- Both machines pointing `StorageProvider` at the same shared root
-- Machine A saves in GarageBand → Machine B's watcher detects the change via FSEvents on the shared folder
-- Handoff from Machine A to Machine B — `handoff.json` written atomically, Machine B detects the change
-- Reconciliation on Machine B startup after Machine A made offline edits
-- Snapshot taken on Machine A visible on Machine B after sync
+**Scenario A — Two people, shared folder:**
+- Maya configures BandTracker, inits a project in a shared Dropbox folder
+- Jordan configures BandTracker on his machine, joins via the shared folder path
+- Maya saves in GarageBand → Jordan's watcher detects the change via FSEvents
+- Maya hands off to Jordan — `handoff.json` written atomically, Jordan's client detects it
+- Jordan makes changes, snapshots, hands back
+- Maya reconciles on startup after Jordan's offline edits
+
+**Scenario B — Same person, two devices:**
+- Maya has BandTracker configured on her MacBook and her iMac
+- Both point at the same shared root
+- Verify no identity conflicts, no duplicate collaborator entries, correct lock behavior
 
 **What may need to be built:**
-- `StorageProvider` currently only has a working `local` implementation — `detect()` identifies
-  iCloud and Dropbox paths but no provider-specific handling exists yet
-- Sync delay handling — shared folders have propagation latency that the watcher may need to tolerate
-- Cross-machine identifier agreement — both machines must use the same identifier string for the same person
+- `StorageProvider` currently only has a working `local` implementation — `detect()`
+  identifies iCloud and Dropbox paths but no provider-specific handling exists yet
+- Sync delay handling — shared folders have propagation latency the watcher may need to tolerate
 
-**Definition of done:** Two machines, one shared folder, one GarageBand project, full
-handoff cycle completed without manual intervention or data loss.
+**Definition of done:** Two people, one shared folder, one GarageBand project, full
+handoff cycle completed in both directions without manual intervention or data loss.
 
 ---
 
-## Increment 15 — Menu bar + full window SwiftUI app ⬜
+## Increment 16 — Menu bar + full window SwiftUI app ⬜
 
 **Goal:** First non-technical user can use BandTracker without touching a terminal.
 
@@ -247,10 +300,12 @@ These apply to every increment:
    outputting clean structured JSON. Design output to be serializable from the start.
 
 2. **`identifier` is always opaque** — never parse it as an email or specific format.
-   It's a stable string both machines agree on. Protects a future auth migration.
+   It's a stable string that represents a person across all their devices. Established
+   once at configure time, never parsed or validated by business logic. Designed so
+   a future auth token can replace it without touching anything else.
 
 3. **`bandtracker watch` decoupled from CLI** — nothing in `core/watcher.py` assumes
-   it's being called from a terminal. Required for the Increment 13 daemon transition.
+   it's being called from a terminal. Required for the Increment 14 daemon transition.
 
 4. **Swift integration model** — Swift calls the CLI via `Process`, consumes `--json`
    output, watches filesystem via FSEvents. The CLI is the API.
