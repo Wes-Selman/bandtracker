@@ -37,6 +37,7 @@ from core.models import (
     StorageProvider,
 )
 from core.init import validate_project_name, write_json_atomic
+from core.bundle_ref import store_bundle_ref
 
 
 # ─────────────────────────────────────────────────────────────
@@ -117,6 +118,7 @@ class RenameResult:
 
     old_name: Optional[str] = None
     new_name: Optional[str] = None
+    gb_bundle_path: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -169,6 +171,11 @@ def _sanitize_raw_name(raw: str) -> str:
     if not name:
         name = "Untitled Project"
     return name
+
+
+def _gb_lock_present(band_path: Path) -> bool:
+    """Return True if GarageBand's lock file exists inside the bundle."""
+    return (band_path / ".lck").exists()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -450,6 +457,36 @@ def rename_project(
     if load_err:
         return RenameResult(ok=False, errors=[load_err])
 
+    # ── Resolve GB bundle path (pre-flight) ────────────────────
+    # GB bundle rename is best-effort. If GB is open, the bundle
+    # is missing, or the rename fails, we warn but proceed.
+    resolved_gb: Optional[Path] = None
+    new_gb_path: Optional[Path] = None
+    gb_skip_reason: Optional[str] = None
+
+    if project.gb_bundle_path:
+        resolved_gb = Path(project.gb_bundle_path).expanduser().resolve()
+
+        if not resolved_gb.exists():
+            gb_skip_reason = (
+                f"GarageBand bundle not found at {resolved_gb} — "
+                "skipped bundle rename."
+            )
+        elif _gb_lock_present(resolved_gb):
+            gb_skip_reason = (
+                "GarageBand appears to be open (lock file found). "
+                "The project was renamed but the .band file was not. "
+                f"Close GarageBand and use `bandtracker set-gb` if needed."
+            )
+        else:
+            new_gb_path = resolved_gb.parent / f"{new_name}.band"
+            if new_gb_path.exists() and new_gb_path != resolved_gb:
+                gb_skip_reason = (
+                    f"A file already exists at {new_gb_path} — "
+                    "skipped GarageBand bundle rename."
+                )
+                new_gb_path = None
+
     # ── Rename folder on disk ──────────────────────────────────
     try:
         old_path.rename(new_path)
@@ -459,14 +496,72 @@ def rename_project(
             errors=[f"Could not rename project folder: {e}"],
         )
 
-    # ── Update project.json ────────────────────────────────────
+    # ── Rename live bundle ─────────────────────────────────────
     new_paths = ProjectPaths(new_path)
+    warnings: list[str] = []
+
+    old_bundle = new_paths.live_band(project_name)
+    new_bundle = new_paths.live_band(new_name)
+
+    if old_bundle.exists():
+        try:
+            old_bundle.rename(new_bundle)
+        except OSError as e:
+            # Roll back folder rename
+            try:
+                new_path.rename(old_path)
+            except OSError:
+                pass
+            return RenameResult(
+                ok=False,
+                errors=[f"Could not rename live bundle: {e}"],
+            )
+    else:
+        warnings.append(
+            f"No live bundle found at {old_bundle} — skipped bundle rename."
+        )
+
+    # ── Rename GarageBand bundle (best-effort) ──────────────────
+    # The GB bundle lives outside BandTracker's root and may be on
+    # a different volume or have permissions issues. If the rename
+    # fails, the project rename still succeeds and gb_bundle_path
+    # remains pointed at the old (still valid) location.
+    if gb_skip_reason:
+        warnings.append(gb_skip_reason)
+    elif project.gb_bundle_path and resolved_gb is not None and new_gb_path is not None:
+        try:
+            resolved_gb.rename(new_gb_path)
+        except OSError as e:
+            warnings.append(
+                f"Could not rename GarageBand bundle: {e}. "
+                f"The project was renamed but the .band file remains at "
+                f"{resolved_gb}."
+            )
+            new_gb_path = None
+
+    # ── Update project.json ────────────────────────────────────
     project.name = new_name
+
+    # Update gb_bundle_path/alias if we renamed the GB bundle
+    if new_gb_path is not None and new_gb_path.exists():
+        path_str, alias = store_bundle_ref(new_gb_path)
+        project.gb_bundle_path = path_str
+        project.gb_bundle_alias = alias
 
     try:
         write_json_atomic(new_paths.project_json, project.to_json())
     except Exception as e:
-        # Try to roll back the rename
+        # Try to roll back all renames
+        if new_gb_path is not None and new_gb_path.exists() and resolved_gb is not None:
+            try:
+                new_gb_path.rename(resolved_gb)
+            except OSError:
+                pass
+        if new_bundle.exists():
+            try:
+                new_bundle.rename(old_bundle)
+            except OSError:
+                pass
         try:
             new_path.rename(old_path)
         except OSError:
@@ -480,4 +575,6 @@ def rename_project(
         ok=True,
         old_name=project_name,
         new_name=new_name,
+        gb_bundle_path=project.gb_bundle_path,
+        warnings=warnings,
     )

@@ -109,6 +109,16 @@ def make_file(path: Path, content: bytes = b"data") -> Path:
     return path
 
 
+def _make_gb_bundle(tmp_path: Path, name: str = PROJECT_NAME) -> Path:
+    """Create a fake GarageBand bundle outside BandTracker root."""
+    gb_dir = tmp_path / "Music"
+    gb_dir.mkdir(parents=True, exist_ok=True)
+    band = gb_dir / f"{name}.band"
+    pd = band / "Alternatives" / "000" / "ProjectData"
+    make_file(pd, b"gb-project-data")
+    return band
+
+
 def _make_provider(tmp_path: Path) -> StorageProvider:
     root = tmp_path / "BandTracker"
     root.mkdir(parents=True, exist_ok=True)
@@ -669,6 +679,118 @@ class TestRenameProject:
 
         assert result.ok
         assert result.new_name == "Untitled Project"
+
+    def test_live_bundle_renamed(self, tmp_path):
+        """The .band bundle inside live/ must be renamed alongside the folder."""
+        provider, _ = _make_project(tmp_path, num_snapshots=1)
+
+        rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        new_paths = ProjectPaths(provider.project_path("Renamed Song"))
+        old_bundle = new_paths.live_band(PROJECT_NAME)
+        new_bundle = new_paths.live_band("Renamed Song")
+        assert not old_bundle.exists()
+        assert new_bundle.exists()
+
+    def test_live_project_data_accessible_after_rename(self, tmp_path):
+        """After rename, live ProjectData should be reachable via the new name."""
+        provider, _ = _make_project(tmp_path, num_snapshots=1)
+
+        rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        new_paths = ProjectPaths(provider.project_path("Renamed Song"))
+        live_pd = new_paths.live_project_data("Renamed Song")
+        assert live_pd.exists()
+        assert live_pd.read_bytes() == b"pd-content-v1"
+
+    def test_no_live_bundle_warns_but_succeeds(self, tmp_path):
+        """If there's no live bundle, rename should warn but still succeed."""
+        provider, _ = _make_project(tmp_path, num_snapshots=0, with_live_pd=False)
+
+        result = rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        assert result.ok
+        assert any("live bundle" in w.lower() for w in result.warnings)
+
+    def test_gb_bundle_renamed_on_disk(self, tmp_path):
+        """The original GarageBand .band file should be renamed."""
+        provider, paths = _make_project(tmp_path, num_snapshots=1)
+        gb_band = _make_gb_bundle(tmp_path)
+
+        # Set gb_bundle_path in project.json
+        project = Project.from_json(paths.project_json.read_text())
+        project.gb_bundle_path = str(gb_band)
+        write_json_atomic(paths.project_json, project.to_json())
+
+        result = rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        assert result.ok
+        assert not gb_band.exists()
+        new_gb = tmp_path / "Music" / "Renamed Song.band"
+        assert new_gb.exists()
+
+    def test_gb_bundle_path_updated_in_project_json(self, tmp_path):
+        """After rename, project.json should point to the new GB bundle path."""
+        provider, paths = _make_project(tmp_path, num_snapshots=1)
+        gb_band = _make_gb_bundle(tmp_path)
+
+        project = Project.from_json(paths.project_json.read_text())
+        project.gb_bundle_path = str(gb_band)
+        write_json_atomic(paths.project_json, project.to_json())
+
+        rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        new_paths = ProjectPaths(provider.project_path("Renamed Song"))
+        updated = Project.from_json(new_paths.project_json.read_text())
+        assert "Renamed Song" in updated.gb_bundle_path
+        assert PROJECT_NAME not in updated.gb_bundle_path
+
+    def test_gb_lock_skips_gb_rename_but_succeeds(self, tmp_path):
+        """If GarageBand lock file is present, skip GB rename but succeed."""
+        provider, paths = _make_project(tmp_path, num_snapshots=1)
+        gb_band = _make_gb_bundle(tmp_path)
+
+        project = Project.from_json(paths.project_json.read_text())
+        project.gb_bundle_path = str(gb_band)
+        write_json_atomic(paths.project_json, project.to_json())
+
+        # Create lock file
+        (gb_band / ".lck").touch()
+
+        result = rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        assert result.ok
+        assert any("lock" in w.lower() or "garageband" in w.lower()
+                    for w in result.warnings)
+        # Project folder was renamed
+        assert not provider.project_path(PROJECT_NAME).exists()
+        assert provider.project_path("Renamed Song").exists()
+        # GB bundle was NOT renamed
+        assert gb_band.exists()
+
+    def test_gb_bundle_missing_warns_but_succeeds(self, tmp_path):
+        """If gb_bundle_path points to a missing file, warn but succeed."""
+        provider, paths = _make_project(tmp_path, num_snapshots=1)
+
+        project = Project.from_json(paths.project_json.read_text())
+        project.gb_bundle_path = str(tmp_path / "Music" / "Missing.band")
+        write_json_atomic(paths.project_json, project.to_json())
+
+        result = rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        assert result.ok
+        assert any("not found" in w.lower() for w in result.warnings)
+
+    def test_no_gb_bundle_path_set_skips_silently(self, tmp_path):
+        """If gb_bundle_path is None, rename should not attempt GB rename."""
+        provider, _ = _make_project(tmp_path, num_snapshots=1)
+
+        result = rename_project(provider, PROJECT_NAME, "Renamed Song")
+
+        assert result.ok
+        assert not any("garageband" in w.lower() or "bundle" in w.lower()
+                       for w in result.warnings
+                       if "live" not in w.lower())
 
 
 # ─────────────────────────────────────────────────────────────

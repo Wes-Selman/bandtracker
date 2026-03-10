@@ -291,6 +291,9 @@ changes via FSEvents.
 Lives in `app/` within this repo.
 
 ---
+## Increment 17 — Future Considerations ⬜
+
+Branch/fork resolution — When two machines diverge (e.g. both edit while offline), offer three resolution paths: (1) pick one timeline as canonical, (2) fork the divergent version into a new project, (3) create a snapshot in one project from a specific snapshot in another. Depends on Increment 15 findings about real-world divergence patterns.
 
 ## Architectural constraints
 

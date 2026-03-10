@@ -72,5 +72,7 @@ def run(args: argparse.Namespace) -> int:
 
     if result.old_name != result.new_name:
         print(f"✓ Renamed '{result.old_name}' → '{result.new_name}'")
+        if result.gb_bundle_path:
+            print(f"  GarageBand bundle: {result.gb_bundle_path}")
 
     return 0
