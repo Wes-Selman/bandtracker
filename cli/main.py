@@ -26,6 +26,11 @@ from cli.commands import claim as cmd_claim
 from cli.commands import attach as cmd_attach
 from cli.commands import detach as cmd_detach
 from cli.commands import attachments as cmd_attachments
+from cli.commands import status as cmd_status
+from cli.commands import log as cmd_log
+from cli.commands import add_collaborator as cmd_add_collaborator
+from cli.commands import remove_collaborator as cmd_remove_collaborator
+from cli.commands import rename as cmd_rename
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_attach.add_subparser(subparsers)
     cmd_detach.add_subparser(subparsers)
     cmd_attachments.add_subparser(subparsers)
+    cmd_status.add_subparser(subparsers)
+    cmd_log.add_subparser(subparsers)
+    cmd_add_collaborator.add_subparser(subparsers)
+    cmd_remove_collaborator.add_subparser(subparsers)
+    cmd_rename.add_subparser(subparsers)
 
     return parser
 

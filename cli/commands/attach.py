@@ -19,13 +19,13 @@ Usage
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from core.init import validate_project_name
-from core.models import ProjectPaths, SidecarType, StorageProvider
+from core.models import ProjectPaths, SidecarType
 from core.sidecar import do_attach
+from cli.resolver import make_provider, resolve_project
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:  # noqa: SLF001
@@ -74,10 +74,10 @@ def cmd_attach(args: argparse.Namespace) -> int:
     """Entry point called by the CLI router."""
 
     # ── Resolve provider
-    provider = _make_provider(args.root)
+    provider = make_provider(args.root)
 
     # ── Resolve project name
-    project_name = _resolve_project_name(provider, args.project)
+    project_name = resolve_project(provider, args.project)
     if project_name is None:
         return 1
 
@@ -127,54 +127,3 @@ def cmd_attach(args: argparse.Namespace) -> int:
         f"→ snapshot {result.snapshot_index:03d}"
     )
     return 0
-
-
-# ─────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────
-
-def _make_provider(root_arg: str | None) -> StorageProvider:
-    root_str = (
-        root_arg
-        or os.environ.get("BANDTRACKER_ROOT")
-        or str(Path.home() / "BandTracker")
-    )
-    return StorageProvider.local(Path(root_str).expanduser())
-
-
-def _resolve_project_name(
-    provider: StorageProvider,
-    project_arg: str | None,
-) -> str | None:
-    name = project_arg or os.environ.get("BANDTRACKER_PROJECT")
-    if name:
-        if not provider.project_path(name).exists():
-            print(
-                f"Error: Project '{name}' not found in {provider.projects_path}.",
-                file=sys.stderr,
-            )
-            return None
-        return name
-
-    projects_root = provider.projects_path
-    if not projects_root.exists():
-        print(f"Error: No projects found in {projects_root}.", file=sys.stderr)
-        return None
-
-    candidates = sorted(d.name for d in projects_root.iterdir() if d.is_dir())
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) == 0:
-        print(f"Error: No projects found in {projects_root}.", file=sys.stderr)
-        return None
-
-    print("Multiple projects found. Choose one:")
-    for i, name in enumerate(candidates, 1):
-        print(f"  {i}. {name}")
-    try:
-        choice = input("Enter number: ").strip()
-        idx = int(choice) - 1
-        return candidates[idx]
-    except (ValueError, IndexError, EOFError, KeyboardInterrupt):
-        print("Invalid selection. Aborted.", file=sys.stderr)
-        return None

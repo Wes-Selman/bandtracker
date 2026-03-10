@@ -15,13 +15,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from core.handoff_ops import do_handoff
-from core.models import StorageProvider
 from core.init import validate_project_name
-from pathlib import Path
+from cli.resolver import make_provider, resolve_project, resolve_author
 
 
 def add_subparser(subparsers) -> None:
@@ -59,7 +57,7 @@ def add_subparser(subparsers) -> None:
         default=None,
         help=(
             "Project name (folder name under projects/). "
-            "Defaults to BANDTRACKER_PROJECT env var."
+            "Defaults to BANDTRACKER_PROJECT env var or auto-detect."
         ),
     )
     p.add_argument(
@@ -85,22 +83,11 @@ def add_subparser(subparsers) -> None:
 
 def run(args: argparse.Namespace) -> int:
     # ── Resolve root ───────────────────────────────────────────
-    root_str = args.root or os.environ.get("BANDTRACKER_ROOT")
-    if root_str:
-        root = Path(root_str).expanduser().resolve()
-    else:
-        root = Path("~/BandTracker").expanduser()
-
-    provider = StorageProvider.detect(root)
+    provider = make_provider(args.root)
 
     # ── Resolve project name ───────────────────────────────────
-    project_name = args.project or os.environ.get("BANDTRACKER_PROJECT")
+    project_name = resolve_project(provider, args.project)
     if not project_name:
-        print(
-            "Error: project name required. "
-            "Pass --project or set BANDTRACKER_PROJECT.",
-            file=sys.stderr,
-        )
         return 1
 
     try:
@@ -110,7 +97,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     # ── Resolve author ─────────────────────────────────────────
-    author = args.author or os.environ.get("BANDTRACKER_AUTHOR")
+    author = resolve_author(args.author)
     if not author:
         print(
             "Error: author identifier required. "
@@ -119,7 +106,7 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # ── Execute ────────────────────────────────────────────────
+    # ── Run ────────────────────────────────────────────────────
     result = do_handoff(
         provider=provider,
         project_name=project_name,
@@ -129,13 +116,13 @@ def run(args: argparse.Namespace) -> int:
         force=args.force,
     )
 
-    for warning in result.warnings:
-        print(f"Warning: {warning}")
-
     if not result.ok:
-        for error in result.errors:
-            print(f"Error: {error}", file=sys.stderr)
+        for e in result.errors:
+            print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    print(f"✓ {result.summary}")
+    for w in result.warnings:
+        print(f"Warning: {w}")
+
+    print(result.summary)
     return 0

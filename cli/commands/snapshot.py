@@ -21,6 +21,7 @@ from pathlib import Path
 from core.init import validate_project_name
 from core.models import MilestoneTag, StorageProvider
 from core.snapshot import take_snapshot, PLACEHOLDER_DESCRIPTION
+from cli.resolver import make_provider, resolve_project, resolve_author, detect_author
 
 # ─────────────────────────────────────────────────────────────
 # MILESTONE TAG LOOKUP
@@ -107,9 +108,8 @@ Milestone tags:
     parser.add_argument(
         "--root",
         metavar="PATH",
-        type=Path,
-        default=Path.home() / "BandTracker",
-        help="BandTracker root folder. Defaults to ~/BandTracker.",
+        default=None,
+        help="BandTracker root folder (default: ~/BandTracker or BANDTRACKER_ROOT).",
     )
 
     return parser
@@ -120,7 +120,7 @@ Milestone tags:
 # ─────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> int:
-    provider = StorageProvider.local(args.root)
+    provider = make_provider(args.root)
 
     # Resolve project name — either from --project flag or auto-detect
     project_name = args.project
@@ -131,19 +131,14 @@ def run(args: argparse.Namespace) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 1
     if not project_name:
-        project_name = _detect_project(provider)
+        project_name = resolve_project(provider, None)
         if not project_name:
-            print(
-                "error: Could not detect a BandTracker project. "
-                "Use --project NAME to specify one.",
-                file=sys.stderr,
-            )
             return 1
 
-    # Resolve author — either from --author flag or fall back to owner in project.json
-    author = args.author
+    # Resolve author — --author flag → BANDTRACKER_AUTHOR → project owner
+    author = resolve_author(args.author)
     if not author:
-        author = _detect_author(provider, project_name)
+        author = detect_author(provider, project_name)
         if not author:
             print(
                 "error: Could not detect author. Use --author EMAIL.",
@@ -180,34 +175,6 @@ def run(args: argparse.Namespace) -> int:
         print(f"warning: {warning}", file=sys.stderr)
 
     return 0
-
-
-# ─────────────────────────────────────────────────────────────
-# AUTO-DETECTION HELPERS
-# ─────────────────────────────────────────────────────────────
-
-def _detect_project(provider: StorageProvider) -> str | None:
-    projects_path = provider.projects_path
-    if not projects_path.exists():
-        return None
-    projects = [
-        d.name for d in projects_path.iterdir()
-        if d.is_dir() and (d / "project.json").exists()
-    ]
-    return projects[0] if len(projects) == 1 else None
-
-
-def _detect_author(provider: StorageProvider, project_name: str) -> str | None:
-    from core.models import Project, ProjectPaths
-    project_root = provider.project_path(project_name)
-    paths = ProjectPaths(project_root)
-    if not paths.project_json.exists():
-        return None
-    try:
-        project = Project.from_json(paths.project_json.read_text())
-        return project.owner
-    except Exception:
-        return None
 
 
 # ─────────────────────────────────────────────────────────────
