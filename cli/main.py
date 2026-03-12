@@ -31,6 +31,7 @@ from cli.commands import log as cmd_log
 from cli.commands import add_collaborator as cmd_add_collaborator
 from cli.commands import remove_collaborator as cmd_remove_collaborator
 from cli.commands import rename as cmd_rename
+from cli.commands import diff as cmd_diff
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_add_collaborator.add_subparser(subparsers)
     cmd_remove_collaborator.add_subparser(subparsers)
     cmd_rename.add_subparser(subparsers)
+    cmd_diff.add_subparser(subparsers)
 
     return parser
 

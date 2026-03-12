@@ -15,7 +15,7 @@ Pick up from any increment after a break — the status column tells you where t
 | 1 — CLI foundation | 7 | Handoff | ✅ Complete |
 | 1 — CLI foundation | 8 | Sidecar documents | ✅ Complete |
 | 1 — CLI foundation | 9 | Project management | ✅ Complete |
-| 1 — CLI foundation | 10 | Diff command + structural fallback | ⬜ Not started |
+| 1 — CLI foundation | 10 | Diff command + structural fallback | ✅ Complete |
 | 2 — Bridge | 11 | band-cartographer evaluation | ⬜ Not started |
 | 2 — Bridge | 12 | JSON output layer | ⬜ Not started |
 | 2 — Bridge | 13 | Identity foundation + onboarding | ⬜ Not started |
@@ -157,41 +157,28 @@ Also delivers: `cli/resolver.py` — shared CLI resolution for `--root`, `--proj
 
 ---
 
-## Increment 10 — Diff command + structural fallback ⬜
+## Increment 10 — Diff command + structural fallback ✅
 
 **Delivers:** `bandtracker diff <n>`, `bandtracker diff <n> <m>`
 
-Public-facing diff between any two snapshots. Also implements the structural
-fallback tier in `build_description()` — replacing the current "Work in progress"
-placeholder with a meaningful summary when interpretation fails:
+Public-facing diff between any two snapshots, or between a snapshot and the
+current GarageBand bundle. `diff <n>` resolves the GB bundle from project.json
+(same as reconcile/watch) for accurate results regardless of watcher state.
 
-```
-"47 changes detected across 3 regions (+120 bytes)"
-```
+Also implements the structural fallback tier in `build_description()` — three-tier
+description quality: interpreted → structural → identical.
 
-Three-tier description quality: interpreted → structural → identical.
-Applies everywhere descriptions are generated — snapshot, reconcile, watch, diff.
+- Interpreted: `"tempo changed to 128 BPM; track added"`
+- Structural: `"3 byte ranges changed, 48 bytes modified, +120 bytes net"`
+- Identical: `"no changes detected"`
 
-**Core API:** New `core/diff_ops.py` with a `compare()` function that takes two
-ProjectData byte sources, runs the full pipeline (noise mask → byte_diff →
-interpret → describe), and returns a typed result dataclass. The diff command's
-CLI layer consumes this.
+New `core/diff_ops.py` consolidates the diff pipeline (byte_diff → interpret_changes →
+build_description) into a single `compare()` function returning a typed `CompareResult`.
+Future increments can point snapshot/reconcile/watcher at this instead of their
+inline pipelines.
 
-`build_description()` in `core/diff/engine.py` gets the structural fallback tier —
-when interpreted results are empty but byte_diff found changes, produce a summary
-from change count, region count, and size delta instead of falling through to
-"Work in progress".
-
-**Files to read:**
-- `core/diff/engine.py` — byte_diff(), build_description(), DiffResult, ByteRange
-- `core/diff/interpreter.py` — interpret_changes()
-- `core/diff/noise.py` — load_noise_mask()
-- `core/snapshot.py` — _auto_describe() and _compute_diff_summary() show current pipeline wiring
-- `core/reconcile.py` — another diff pipeline consumer
-- `core/init.py` — write_json_atomic(), validate_project_name() (imported by new code)
-- `cli/resolver.py` — shared CLI resolution (new in Increment 9)
-- `cli/commands/status.py` — current CLI pattern using resolver
-- `tests/test_diff.py` — existing diff engine tests
+**Key files:** `core/diff_ops.py`, `core/diff/engine.py`, `cli/commands/diff.py`,
+`tests/test_diff_ops.py`
 
 **Depends on:** Increment 3 (diff engine), Increment 9 (resolver pattern)
 
@@ -215,6 +202,7 @@ If not, document what additional research is needed and defer.
 **Files to read:**
 - `core/diff/interpreter.py` — current interpreter, ported from band-cartographer
 - `core/diff/engine.py` — how interpreter results are consumed
+- `core/diff_ops.py` — consolidated pipeline consumer (new in Increment 10)
 - band-cartographer repo — current state of field mapping research
 
 **Depends on:** Increment 10 (diff command gives interpreter a public surface)
@@ -237,7 +225,9 @@ output. Result dataclasses are already JSON-safe by design (constraint #8).
 **Files to read:**
 - `cli/commands/status.py` — representative command with a result dataclass
 - `cli/commands/log.py` — list output that needs JSON array form
+- `cli/commands/diff.py` — CompareResult serialization
 - `core/project_ops.py` — StatusResult, LogResult etc. for serialization shape
+- `core/diff_ops.py` — CompareResult for serialization shape
 - Every `cli/commands/*.py` file — all need `--json` added
 
 **Depends on:** All result dataclasses being JSON-safe (enforced since Increment 0)
@@ -372,3 +362,11 @@ These apply to every increment:
 
 4. **Storage abstraction intentional** — `StorageProvider` and `ProjectPaths` exist
    for a reason. Never hardcode path assumptions outside these classes.
+
+5. **Diff engine resilience — three-tier descriptions** — interpreted → structural →
+   identical. The structural tier is always producible. Protects against GarageBand
+   format updates and enables Logic Pro support from day one.
+
+6. **Result dataclasses everywhere** — all core functions return a typed result with
+   `.ok`, `.errors`, `.warnings`. No exceptions bubble to the CLI. No `sys.exit` in
+   `core/`.

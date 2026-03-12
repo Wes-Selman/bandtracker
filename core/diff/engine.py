@@ -1,7 +1,7 @@
 """
 core/diff/engine.py
 
-Binary diff engine for BandTracker — Increment 3.
+Binary diff engine for BandTracker — Increment 3, updated in Increment 10.
 
 Compares two ProjectData files byte-by-byte, applies the noise mask to
 strip spurious GarageBand save noise, and returns a list of meaningful
@@ -246,22 +246,29 @@ def build_description(
     Compose a single human-readable description string from
     interpreted changes and raw diff stats.
 
-    If the interpreter produced descriptions, those are the
-    primary content. Raw stats are appended as context when
-    there are uninterpreted ranges.
+    Three-tier description quality:
+
+      1. Interpreted — decoded field changes from the interpreter.
+         Primary content when available. Uninterpreted range count
+         is appended as context.
+
+      2. Structural — when the interpreter returns nothing but byte
+         ranges exist. Reports range count, total bytes modified,
+         and net size delta. Always producible from DiffResult alone.
+
+      3. Identical — no changed ranges at all.
 
     Args:
         diff_result         from byte_diff()
         interpreted_changes from interpreter.interpret_changes()
 
     Returns:
-        A plain-language string suitable for Snapshot.description,
-        e.g. "tempo changed to 124 BPM; 2 tracks added"
-        Falls back to "N byte ranges changed" if nothing was decoded.
+        A plain-language string suitable for Snapshot.description.
     """
     if not diff_result.ok:
         return "diff unavailable"
 
+    # ── Tier 1: Interpreted ────────────────────────────────────
     if interpreted_changes:
         base = "; ".join(interpreted_changes)
         uninterpreted = diff_result.num_changed_ranges - len(interpreted_changes)
@@ -271,13 +278,22 @@ def build_description(
             base += ")"
         return base
 
+    # ── Tier 3: Identical ──────────────────────────────────────
     n = diff_result.num_changed_ranges
     if n == 0:
         return "no changes detected"
 
+    # ── Tier 2: Structural ─────────────────────────────────────
+    total_modified = sum(r.length for r in diff_result.changed_ranges)
+    range_word = "range" if n == 1 else "ranges"
+    byte_word = "byte" if total_modified == 1 else "bytes"
+
+    parts = [f"{n} byte {range_word} changed"]
+    parts.append(f"{total_modified} {byte_word} modified")
+
     delta = diff_result.size_delta
     if delta != 0:
-        direction = "added" if delta > 0 else "removed"
-        return f"{n} byte range{'s' if n != 1 else ''} changed ({abs(delta)} bytes {direction})"
+        sign = "+" if delta > 0 else ""
+        parts.append(f"{sign}{delta} bytes net")
 
-    return f"{n} byte range{'s' if n != 1 else ''} changed"
+    return ", ".join(parts)
