@@ -16,7 +16,7 @@ Pick up from any increment after a break — the status column tells you where t
 | 1 — CLI foundation | 8 | Sidecar documents | ✅ Complete |
 | 1 — CLI foundation | 9 | Project management | ✅ Complete |
 | 1 — CLI foundation | 10 | Diff command + structural fallback | ✅ Complete |
-| 2 — Bridge | 11 | band-cartographer evaluation | ⬜ Not started |
+| 2 — Bridge | 11 | band-cartographer evaluation | ✅ Complete |
 | 2 — Bridge | 12 | JSON output layer | ⬜ Not started |
 | 2 — Bridge | 13 | Identity foundation + onboarding | ⬜ Not started |
 | 2 — Bridge | 14 | Background daemon | ⬜ Not started |
@@ -184,28 +184,65 @@ inline pipelines.
 
 ---
 
-## Increment 11 — band-cartographer evaluation ⬜
+## Increment 11 — band-cartographer evaluation ✅
 
-**Goal:** Assess the relationship between BandTracker and band-cartographer now
-that the diff engine has a public-facing surface.
+**Decision: Keep manual port.** band-cartographer stays a separate research repo.
+Findings continue to be ported into `core/diff/interpreter.py` manually.
 
-**Questions to answer:**
-- Is interpreter coverage broad enough to warrant extracting as an installable package?
-- What Logic Pro offsets can be mapped opportunistically?
-- Should band-cartographer be restructured as a library (`bandcartographer` on PyPI)
-  that BandTracker depends on, rather than a manual port?
+**Evaluation summary:**
 
-**Decision point:** If coverage warrants it, restructure band-cartographer as a
-package and replace `core/diff/interpreter.py` with a proper dependency.
-If not, document what additional research is needed and defer.
+*Coverage assessment:* The interpreter currently decodes tempo (4 offsets, fully
+decoded with BPM value) and pan (1 offset, raw value only). FINDINGS.md in
+band-cartographer has also confirmed mute (`0x1accf`), volume (`0xc5` + `0x1ace9`),
+and time signature (`0xfa`, `0x3b6`) — these have not been ported into the interpreter
+yet. Structural changes (add/remove track/region) are detected by a size-delta
+heuristic, not by offset-based decoding.
 
-**Files to read:**
-- `core/diff/interpreter.py` — current interpreter, ported from band-cartographer
-- `core/diff/engine.py` — how interpreter results are consumed
-- `core/diff_ops.py` — consolidated pipeline consumer (new in Increment 10)
-- band-cartographer repo — current state of field mapping research
+*Package extraction rejected:* Only one GB version's data exists (10.4.8 arm64),
+only one consumer (BandTracker), and the field map is small (~5 fields). Extracting
+band-cartographer as a PyPI package would add CI/CD, versioning, and dependency
+management overhead without proportional benefit. The interpreter is ~120 lines of
+Python — manual porting takes minutes.
 
-**Depends on:** Increment 10 (diff command gives interpreter a public surface)
+*Contributor accessibility:* band-cartographer is ~80% contributor-ready. The
+experiment protocol, CLI tooling, CONTRIBUTING.md, and PR template are solid. Gaps
+identified: no "good first experiment" signposting, no machine-readable field
+registry (`fields.json`), FINDINGS.md tempo encoding is inconsistent with
+BandTracker's confirmed BPM × 10,000 formula, and open questions aren't filed
+as GitHub Issues. These improvements are deferred until BandTracker is socialized
+and community contributions become realistic.
+
+*Version branching:* Research output is already version-keyed
+(`research/<version>_<arch>/`), but the consumption side has no version awareness.
+When a second GB version's data exists, the interpreter will need a `gb_version`
+parameter and a version-keyed field registry. `CbVersion` from the outer plist
+(stored in `project.json` at init time) is the likely discriminator. The three-tier
+fallback already handles unknown versions gracefully (drops to structural
+descriptions). Deferred until cross-version data exists.
+
+*Logic Pro:* The diff engine is format-agnostic and works on any binary blob.
+Only the interpreter is GB-specific. Logic Pro `.logicx` bundles share format
+ancestry but offsets would need independent mapping experiments. Deferred.
+
+**Re-open triggers for package extraction:**
+- A second GB version's research data exists, requiring version-branched offsets
+- A second consumer of the field map appears (e.g., standalone Logic Pro tracker)
+- Field map grows past ~20 fields, making inline maintenance unwieldy
+- Community contributions to band-cartographer become active
+
+**Porting backlog** (confirmed in FINDINGS.md, not yet in interpreter.py):
+- Mute state: `0x1accf` (uint8, 1 byte)
+- Volume: `0xc5` + `0x1ace9` (uint8/uint16, 2 ranges)
+- Time signature: `0xfa`, `0x3b6` (uint32 LE, 2 locations)
+
+**Future work logged (all deferred):**
+- Version-keyed `fields.json` registry in band-cartographer
+- Cross-version comparison tooling (`compare-versions` command)
+- `CbVersion`-based version branching in BandTracker's interpreter
+- Contributor on-ramp improvements (good-first-experiment labels, GitHub Issues)
+- FINDINGS.md tempo encoding correction (should say BPM × 10,000, not µs/beat)
+
+**No code changes. No test count change. 533 passing, 4 skipped.**
 
 ---
 

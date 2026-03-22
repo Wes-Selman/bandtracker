@@ -83,9 +83,8 @@ See [docs/folder-structure.md](docs/folder-structure.md) for the full on-disk la
 
 See [docs/increments.md](docs/increments.md) for the full incremental delivery plan.
 
-**Current status: Increment 10 complete.**
-Phase 1 (CLI foundation) is done. Next: Phase 2 (Bridge) — starting with
-Increment 11 (band-cartographer evaluation).
+**Current status: Increment 11 complete.**
+Phase 2 (Bridge) is underway. Next: Increment 12 (JSON output layer).
 
 ## Running tests
 
@@ -108,6 +107,7 @@ Key findings from that research:
 
 The diff engine in `core/diff/` is a production port of that research.
 band-cartographer continues as a separate research repo — findings are ported
-into BandTracker's interpreter manually as new fields are mapped.
-Increment 11 will evaluate extracting band-cartographer as an installable
-package now that the diff engine has a public-facing surface.
+into BandTracker's interpreter manually as new fields are mapped. Increment 11
+evaluated extracting band-cartographer as a package and decided to keep the
+manual-port approach. See `docs/increments.md` for the full rationale and
+re-open triggers.
